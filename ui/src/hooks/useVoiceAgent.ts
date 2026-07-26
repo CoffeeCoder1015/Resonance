@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentState, DialogueTurn, VisualTheme } from '../types/voice';
+import { transcribeAudio } from '../services/asr';
+import { WavRecorder } from '../services/wavRecorder';
 import { formatTimestamp } from '../utils/dialogueEngine';
 
 interface VoiceWindow extends Window {
-  SpeechRecognition?: new () => any;
-  webkitSpeechRecognition?: new () => any;
   webkitAudioContext?: typeof AudioContext;
 }
 
@@ -27,8 +27,6 @@ export function useVoiceAgent() {
       timestamp: formatTimestamp()
     }
   ]);
-  const [hasMicPermission, setHasMicPermission] = useState<boolean | null>(null);
-  const [speechRecognitionSupported, setSpeechRecognitionSupported] = useState<boolean | null>(null);
   const [speechOutputEnabled, setSpeechOutputEnabled] = useState(true);
   const [currentSpeechVolume, setCurrentSpeechVolume] = useState(0.05);
   const [audioFrequencies, setAudioFrequencies] = useState<Uint8Array>(() => new Uint8Array(64).fill(12));
@@ -36,7 +34,8 @@ export function useVoiceAgent() {
   const stateRef = useRef<AgentState>('idle');
   const speechOutputEnabledRef = useRef(true);
   const turnGenerationRef = useRef(0);
-  const recognitionRef = useRef<any>(null);
+  const wavRecorderRef = useRef<WavRecorder | null>(null);
+  const transcriptionAbortRef = useRef<AbortController | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -81,13 +80,11 @@ export function useVoiceAgent() {
     turnGenerationRef.current += 1;
     clearScheduledWork();
 
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch {
-        // The recognition session may already be closed.
-      }
-    }
+    transcriptionAbortRef.current?.abort();
+    transcriptionAbortRef.current = null;
+
+    wavRecorderRef.current?.cancel();
+    wavRecorderRef.current = null;
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
@@ -211,17 +208,67 @@ export function useVoiceAgent() {
       audioContextRef.current = context;
       analyserRef.current = analyser;
       microphoneRef.current = microphone;
-      setHasMicPermission(true);
       return true;
     } catch (error) {
       console.warn('Microphone unavailable.', error);
-      setHasMicPermission(false);
       releaseMicrophone();
       return false;
     }
   }, [releaseMicrophone]);
 
   const toggleListening = useCallback(async () => {
+    if (stateRef.current === 'listening') {
+      const recorder = wavRecorderRef.current;
+      wavRecorderRef.current = null;
+      if (!recorder) {
+        cancelCurrentTurn();
+        return;
+      }
+
+      const generation = turnGenerationRef.current;
+      setState('processing');
+
+      try {
+        const audio = recorder.stop();
+        releaseMicrophone();
+        const abortController = new AbortController();
+        transcriptionAbortRef.current = abortController;
+        const text = await transcribeAudio(audio, abortController.signal);
+        transcriptionAbortRef.current = null;
+
+        if (generation !== turnGenerationRef.current) return;
+        if (!text) throw new Error('No speech was detected.');
+
+        setTranscript(turns => [
+          ...turns,
+          {
+            id: createTurnId('user'),
+            sender: 'user',
+            text,
+            timestamp: formatTimestamp()
+          }
+        ]);
+        handleAgentProcessing(text, generation, text);
+      } catch (error) {
+        transcriptionAbortRef.current = null;
+        releaseMicrophone();
+        if (generation !== turnGenerationRef.current) return;
+
+        console.error('Transcription failed.', error);
+        setTranscript(turns => [
+          ...turns,
+          {
+            id: createTurnId('agent'),
+            sender: 'agent',
+            text: error instanceof Error ? error.message : 'Transcription failed.',
+            timestamp: formatTimestamp()
+          }
+        ]);
+        setState('idle');
+      }
+      return;
+    }
+
     if (stateRef.current !== 'idle') {
       cancelCurrentTurn();
       return;
@@ -229,19 +276,6 @@ export function useVoiceAgent() {
 
     cancelCurrentTurn();
     const generation = turnGenerationRef.current;
-
-    if (!speechRecognitionSupported || !recognitionRef.current) {
-      setTranscript(turns => [
-        ...turns,
-        {
-          id: createTurnId('agent'),
-          sender: 'agent',
-          text: 'Speech recognition is unavailable.',
-          timestamp: formatTimestamp()
-        }
-      ]);
-      return;
-    }
 
     const hasMicrophone = await initMicrophone();
     if (generation !== turnGenerationRef.current) return;
@@ -259,16 +293,24 @@ export function useVoiceAgent() {
     }
 
     try {
-      recognitionRef.current.start();
+      const context = audioContextRef.current;
+      const microphone = microphoneRef.current;
+      if (!context || !microphone) throw new Error('Microphone initialization failed.');
+      if (context.state === 'suspended') await context.resume();
+
+      const recorder = new WavRecorder(context, microphone);
+      recorder.start();
+      wavRecorderRef.current = recorder;
       setState('listening');
-    } catch {
+    } catch (error) {
+      console.error('Recording failed.', error);
       releaseMicrophone();
       setTranscript(turns => [
         ...turns,
         {
           id: createTurnId('agent'),
           sender: 'agent',
-          text: 'Speech recognition could not start.',
+          text: error instanceof Error ? error.message : 'Recording failed.',
           timestamp: formatTimestamp()
         }
       ]);
@@ -276,10 +318,10 @@ export function useVoiceAgent() {
     }
   }, [
     cancelCurrentTurn,
+    handleAgentProcessing,
     initMicrophone,
     releaseMicrophone,
-    setState,
-    speechRecognitionSupported
+    setState
   ]);
 
   const submitTextTurn = useCallback(
@@ -357,74 +399,6 @@ export function useVoiceAgent() {
   }, [cancelCurrentTurn, setState, transcript]);
 
   useEffect(() => {
-    const voiceWindow = window as VoiceWindow;
-    const SpeechRecognitionConstructor =
-      voiceWindow.SpeechRecognition ?? voiceWindow.webkitSpeechRecognition;
-    setSpeechRecognitionSupported(Boolean(SpeechRecognitionConstructor));
-    if (!SpeechRecognitionConstructor) return;
-
-    const recognition = new SpeechRecognitionConstructor();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onstart = () => setState('listening');
-    recognition.onresult = (event: any) => {
-      let interimText = '';
-      let finalText = '';
-
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        if (result.isFinal) finalText += result[0].transcript;
-        else interimText += result[0].transcript;
-      }
-
-      const activeText = finalText || interimText;
-      if (activeText) {
-        setTranscript(turns => {
-          const previous = turns[turns.length - 1];
-          if (previous?.sender === 'user' && previous.isStreaming) {
-            return [...turns.slice(0, -1), { ...previous, text: activeText, isStreaming: !finalText }];
-          }
-          return [
-            ...turns,
-            {
-              id: createTurnId('user'),
-              sender: 'user',
-              text: activeText,
-              timestamp: formatTimestamp(),
-              isStreaming: !finalText
-            }
-          ];
-        });
-      }
-
-      if (finalText) {
-        const generation = turnGenerationRef.current;
-        schedule(() => handleAgentProcessing(finalText, generation), 250);
-      }
-    };
-    recognition.onerror = () => {
-      if (stateRef.current === 'listening') setState('idle');
-      releaseMicrophone();
-    };
-    recognition.onend = () => {
-      if (stateRef.current === 'listening') setState('idle');
-      releaseMicrophone();
-    };
-
-    recognitionRef.current = recognition;
-    return () => {
-      try {
-        recognition.abort();
-      } catch {
-        // The recognition session may already be closed.
-      }
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
-    };
-  }, [handleAgentProcessing, releaseMicrophone, schedule, setState]);
-
-  useEffect(() => {
     let lastSignalUpdate = 0;
     let lastSignalState: AgentState | null = null;
 
@@ -487,6 +461,8 @@ export function useVoiceAgent() {
     () => () => {
       turnGenerationRef.current += 1;
       clearScheduledWork();
+      transcriptionAbortRef.current?.abort();
+      wavRecorderRef.current?.cancel();
       releaseMicrophone();
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     },
@@ -497,8 +473,6 @@ export function useVoiceAgent() {
     state,
     visualTheme,
     transcript,
-    hasMicPermission,
-    speechRecognitionSupported,
     speechOutputEnabled,
     canReplayResponse: transcript.some(turn => turn.sender === 'agent' && turn.text.trim().length > 0),
     currentSpeechVolume,
