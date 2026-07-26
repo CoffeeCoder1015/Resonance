@@ -1,5 +1,13 @@
 export type AgentState = 'idle' | 'listening' | 'processing' | 'speaking';
 
+export type VoicePhase =
+  | 'idle'
+  | 'acquiring-microphone'
+  | 'listening'
+  | 'transcribing'
+  | 'responding'
+  | 'speaking';
+
 export type VisualTheme =
   | 'clay-blob'       // 3D Bouncy Ceramic Clay Blob (Canary Yellow mood)
   | 'toy-collider'    // 3D Pop Toy Candy Collider (Electric Mint mood)
