@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentState, DialogueTurn, VisualTheme } from '../types/voice';
-import { formatTimestamp, getIntelligentResponse, SIMULATED_CONVERSATIONS } from '../utils/dialogueEngine';
+import { formatTimestamp } from '../utils/dialogueEngine';
 
 interface VoiceWindow extends Window {
   SpeechRecognition?: new () => any;
@@ -184,58 +184,10 @@ export function useVoiceAgent() {
       setState('processing');
       schedule(() => {
         if (generation !== turnGenerationRef.current) return;
-        startAgentSpeech(overrideReply ?? getIntelligentResponse(userPrompt), generation);
-      }, Math.floor(Math.random() * 350) + 650);
+        startAgentSpeech(overrideReply ?? userPrompt, generation);
+      }, 180);
     },
     [schedule, setState, startAgentSpeech]
-  );
-
-  const startSimulatedListening = useCallback(
-    (generation: number) => {
-      setState('listening');
-      const topic = SIMULATED_CONVERSATIONS[Math.floor(Math.random() * SIMULATED_CONVERSATIONS.length)];
-      const userTurnId = createTurnId('user');
-
-      setTranscript(turns => [
-        ...turns,
-        {
-          id: userTurnId,
-          sender: 'user',
-          text: '',
-          timestamp: formatTimestamp(),
-          isStreaming: true
-        }
-      ]);
-
-      let characterIndex = 0;
-      const streamUserText = () => {
-        if (generation !== turnGenerationRef.current) return;
-
-        if (characterIndex <= topic.userPrompt.length) {
-          const nextText = topic.userPrompt.slice(0, characterIndex);
-          setTranscript(turns =>
-            turns.map(turn =>
-              turn.id === userTurnId
-                ? { ...turn, text: nextText, isStreaming: characterIndex < topic.userPrompt.length }
-                : turn
-            )
-          );
-          characterIndex += Math.floor(Math.random() * 4) + 2;
-          schedule(streamUserText, 40);
-          return;
-        }
-
-        setTranscript(turns =>
-          turns.map(turn =>
-            turn.id === userTurnId ? { ...turn, text: topic.userPrompt, isStreaming: false } : turn
-          )
-        );
-        handleAgentProcessing(topic.userPrompt, generation, topic.agentResponse);
-      };
-
-      streamUserText();
-    },
-    [handleAgentProcessing, schedule, setState]
   );
 
   const initMicrophone = useCallback(async () => {
@@ -262,7 +214,7 @@ export function useVoiceAgent() {
       setHasMicPermission(true);
       return true;
     } catch (error) {
-      console.warn('Microphone unavailable. Using demo mode.', error);
+      console.warn('Microphone unavailable.', error);
       setHasMicPermission(false);
       releaseMicrophone();
       return false;
@@ -279,14 +231,30 @@ export function useVoiceAgent() {
     const generation = turnGenerationRef.current;
 
     if (!speechRecognitionSupported || !recognitionRef.current) {
-      startSimulatedListening(generation);
+      setTranscript(turns => [
+        ...turns,
+        {
+          id: createTurnId('agent'),
+          sender: 'agent',
+          text: 'Speech recognition is unavailable.',
+          timestamp: formatTimestamp()
+        }
+      ]);
       return;
     }
 
     const hasMicrophone = await initMicrophone();
     if (generation !== turnGenerationRef.current) return;
     if (!hasMicrophone) {
-      startSimulatedListening(generation);
+      setTranscript(turns => [
+        ...turns,
+        {
+          id: createTurnId('agent'),
+          sender: 'agent',
+          text: 'Microphone access is unavailable.',
+          timestamp: formatTimestamp()
+        }
+      ]);
       return;
     }
 
@@ -295,18 +263,26 @@ export function useVoiceAgent() {
       setState('listening');
     } catch {
       releaseMicrophone();
-      startSimulatedListening(generation);
+      setTranscript(turns => [
+        ...turns,
+        {
+          id: createTurnId('agent'),
+          sender: 'agent',
+          text: 'Speech recognition could not start.',
+          timestamp: formatTimestamp()
+        }
+      ]);
+      setState('idle');
     }
   }, [
     cancelCurrentTurn,
     initMicrophone,
     releaseMicrophone,
     setState,
-    speechRecognitionSupported,
-    startSimulatedListening
+    speechRecognitionSupported
   ]);
 
-  const triggerSimulatedTurn = useCallback(
+  const submitTextTurn = useCallback(
     (userText: string, agentReply?: string) => {
       const text = userText.trim();
       if (!text) return;
@@ -528,7 +504,7 @@ export function useVoiceAgent() {
     currentSpeechVolume,
     audioFrequencies,
     toggleListening,
-    triggerSimulatedTurn,
+    submitTextTurn,
     toggleSpeechOutput,
     replayLastResponse,
     selectTheme,

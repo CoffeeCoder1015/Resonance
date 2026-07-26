@@ -24,7 +24,7 @@ interface MinimalControlBarProps {
   speechOutputEnabled: boolean;
   canReplayResponse: boolean;
   onToggleListen: () => void;
-  onTriggerSimulatedTurn: (text: string, reply?: string) => void;
+  onSubmitTextTurn: (text: string, reply?: string) => void;
   onToggleSpeechOutput: () => void;
   onReplayLastResponse: () => void;
   onSelectTheme: (theme: VisualTheme) => void;
@@ -39,7 +39,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
   speechOutputEnabled,
   canReplayResponse,
   onToggleListen,
-  onTriggerSimulatedTurn,
+  onSubmitTextTurn,
   onToggleSpeechOutput,
   onReplayLastResponse,
   onSelectTheme,
@@ -73,7 +73,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
   const handleTextSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!inputText.trim()) return;
-    onTriggerSimulatedTurn(inputText.trim());
+    onSubmitTextTurn(inputText.trim());
     setInputText('');
     setShowTextInput(false);
   };

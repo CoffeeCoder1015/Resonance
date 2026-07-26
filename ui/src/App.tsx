@@ -15,7 +15,7 @@ export function App() {
     currentSpeechVolume,
     audioFrequencies,
     toggleListening,
-    triggerSimulatedTurn,
+    submitTextTurn,
     toggleSpeechOutput,
     replayLastResponse,
     selectTheme,
@@ -116,7 +116,7 @@ export function App() {
         speechOutputEnabled={speechOutputEnabled}
         canReplayResponse={canReplayResponse}
         onToggleListen={toggleListening}
-        onTriggerSimulatedTurn={triggerSimulatedTurn}
+        onSubmitTextTurn={submitTextTurn}
         onToggleSpeechOutput={toggleSpeechOutput}
         onReplayLastResponse={replayLastResponse}
         onSelectTheme={selectTheme}

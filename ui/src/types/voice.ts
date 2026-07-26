@@ -88,10 +88,3 @@ export interface AudioSignal {
   frequencies: Uint8Array;
   state: AgentState;
 }
-
-export interface PresetTopic {
-  id: string;
-  userPrompt: string;
-  agentResponse: string;
-  duration?: number;
-}
