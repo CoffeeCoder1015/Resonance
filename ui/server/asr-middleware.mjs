@@ -2,6 +2,13 @@ import { createWhisperProvider } from './asr-provider.mjs';
 
 const ASR_ROUTE = '/api/asr/transcriptions';
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const DEFAULT_ASR_TIMEOUT_MS = 120_000;
+
+function createHttpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
 
 function sendJson(response, statusCode, body) {
   response.statusCode = statusCode;
@@ -29,9 +36,7 @@ function getFilename(contentType) {
 async function readBody(request) {
   const declaredLength = Number(request.headers['content-length'] || 0);
   if (declaredLength > MAX_AUDIO_BYTES) {
-    const error = new Error('Audio recording is too large.');
-    error.statusCode = 413;
-    throw error;
+    throw createHttpError('Audio recording is too large.', 413);
   }
 
   const chunks = [];
@@ -40,17 +45,13 @@ async function readBody(request) {
   for await (const chunk of request) {
     totalBytes += chunk.length;
     if (totalBytes > MAX_AUDIO_BYTES) {
-      const error = new Error('Audio recording is too large.');
-      error.statusCode = 413;
-      throw error;
+      throw createHttpError('Audio recording is too large.', 413);
     }
     chunks.push(chunk);
   }
 
   if (totalBytes === 0) {
-    const error = new Error('Audio recording is empty.');
-    error.statusCode = 400;
-    throw error;
+    throw createHttpError('Audio recording is empty.', 400);
   }
 
   return Buffer.concat(chunks, totalBytes);
@@ -58,7 +59,8 @@ async function readBody(request) {
 
 export function createAsrMiddleware({
   provider = createWhisperProvider(),
-  logger = console
+  logger = console,
+  timeoutMs = Number(process.env.ASR_TIMEOUT_MS) || DEFAULT_ASR_TIMEOUT_MS
 } = {}) {
   return async function asrMiddleware(request, response, next) {
     const pathname = new URL(request.url || '/', 'http://resonance.local').pathname;
@@ -79,10 +81,24 @@ export function createAsrMiddleware({
       return;
     }
 
+    const abortController = new AbortController();
+    const abortForDisconnect = () => {
+      if (!response.writableFinished) {
+        abortController.abort(createHttpError('Client disconnected.', 499));
+      }
+    };
+    const abortForTimeout = () => {
+      abortController.abort(createHttpError('Transcription timed out.', 504));
+    };
+    const timeoutId = setTimeout(abortForTimeout, timeoutMs);
+    request.once('aborted', abortForDisconnect);
+    response.once('close', abortForDisconnect);
+
     try {
       const audio = await readBody(request);
-      const abortController = new AbortController();
-      request.once('aborted', () => abortController.abort());
+      if (abortController.signal.aborted) {
+        throw abortController.signal.reason;
+      }
 
       const result = await provider.transcribe({
         audio,
@@ -91,14 +107,32 @@ export function createAsrMiddleware({
         signal: abortController.signal
       });
 
-      sendJson(response, 200, result);
+      if (!response.destroyed && !response.writableEnded) {
+        sendJson(response, 200, result);
+      }
     } catch (error) {
+      if (response.destroyed || response.writableEnded) {
+        return;
+      }
+
+      const errorStatus = typeof error?.statusCode === 'number' ? error.statusCode : null;
       const statusCode =
-        typeof error?.statusCode === 'number' && error.statusCode < 500 ? error.statusCode : 502;
+        (errorStatus !== null && errorStatus >= 400 && errorStatus < 500) || errorStatus === 504
+          ? errorStatus
+          : 502;
       logger.error('[asr]', error);
       sendJson(response, statusCode, {
-        error: statusCode === 502 ? 'Transcription service unavailable.' : error.message
+        error:
+          statusCode === 502
+            ? 'Transcription service unavailable.'
+            : statusCode === 504
+              ? 'Transcription timed out.'
+              : error.message
       });
+    } finally {
+      clearTimeout(timeoutId);
+      request.off('aborted', abortForDisconnect);
+      response.off('close', abortForDisconnect);
     }
   };
 }

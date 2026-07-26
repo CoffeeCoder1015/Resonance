@@ -1,5 +1,11 @@
 const TARGET_SAMPLE_RATE = 16_000;
 const BUFFER_SIZE = 4_096;
+const DEFAULT_MAX_DURATION_SECONDS = 60;
+
+interface WavRecorderOptions {
+  maxDurationSeconds?: number;
+  onMaxDuration?: () => void;
+}
 
 function mergeSamples(chunks: Float32Array[], sampleCount: number): Float32Array {
   const merged = new Float32Array(sampleCount);
@@ -76,11 +82,21 @@ export class WavRecorder {
   private sampleCount = 0;
   private processor: ScriptProcessorNode | null = null;
   private silentOutput: GainNode | null = null;
+  private readonly maxSampleCount: number;
+  private readonly onMaxDuration?: () => void;
+  private maxDurationSignalled = false;
 
   constructor(
     private readonly context: AudioContext,
-    private readonly source: MediaStreamAudioSourceNode
-  ) {}
+    private readonly source: MediaStreamAudioSourceNode,
+    {
+      maxDurationSeconds = DEFAULT_MAX_DURATION_SECONDS,
+      onMaxDuration
+    }: WavRecorderOptions = {}
+  ) {
+    this.maxSampleCount = Math.max(1, Math.floor(context.sampleRate * maxDurationSeconds));
+    this.onMaxDuration = onMaxDuration;
+  }
 
   start() {
     if (this.processor) throw new Error('Recording is already active.');
@@ -90,9 +106,19 @@ export class WavRecorder {
     silentOutput.gain.value = 0;
 
     processor.onaudioprocess = event => {
-      const samples = event.inputBuffer.getChannelData(0).slice();
-      this.chunks.push(samples);
-      this.sampleCount += samples.length;
+      const input = event.inputBuffer.getChannelData(0);
+      const remainingSamples = this.maxSampleCount - this.sampleCount;
+
+      if (remainingSamples > 0) {
+        const samples = input.slice(0, remainingSamples);
+        this.chunks.push(samples);
+        this.sampleCount += samples.length;
+      }
+
+      if (this.sampleCount >= this.maxSampleCount && !this.maxDurationSignalled) {
+        this.maxDurationSignalled = true;
+        queueMicrotask(() => this.onMaxDuration?.());
+      }
     };
 
     this.source.connect(processor);
@@ -110,6 +136,7 @@ export class WavRecorder {
     const wav = encodeWav(resample(samples, this.context.sampleRate));
     this.chunks = [];
     this.sampleCount = 0;
+    this.maxDurationSignalled = false;
     return wav;
   }
 
@@ -117,6 +144,7 @@ export class WavRecorder {
     this.disconnect();
     this.chunks = [];
     this.sampleCount = 0;
+    this.maxDurationSignalled = false;
   }
 
   private disconnect() {

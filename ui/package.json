@@ -12,8 +12,9 @@
     "build": "vite build",
     "start": "node server/index.mjs",
     "preview": "vite preview",
+    "test:server": "node --test server/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run build"
+    "check": "npm run typecheck && npm run test:server && npm run build"
   },
   "dependencies": {
     "clsx": "2.1.1",

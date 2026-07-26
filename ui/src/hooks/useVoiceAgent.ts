@@ -36,6 +36,8 @@ export function useVoiceAgent() {
   const turnGenerationRef = useRef(0);
   const wavRecorderRef = useRef<WavRecorder | null>(null);
   const transcriptionAbortRef = useRef<AbortController | null>(null);
+  const microphoneInitializationRef = useRef<Promise<boolean> | null>(null);
+  const captureStartInProgressRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -187,85 +189,142 @@ export function useVoiceAgent() {
     [schedule, setState, startAgentSpeech]
   );
 
-  const initMicrophone = useCallback(async () => {
+  const initMicrophone = useCallback(async (generation: number) => {
     if (streamRef.current) return true;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      const voiceWindow = window as VoiceWindow;
-      const AudioContextConstructor = window.AudioContext ?? voiceWindow.webkitAudioContext;
-      if (!AudioContextConstructor) throw new Error('Web Audio is unavailable.');
-
-      const context = new AudioContextConstructor();
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.75;
-
-      const microphone = context.createMediaStreamSource(stream);
-      microphone.connect(analyser);
-
-      streamRef.current = stream;
-      audioContextRef.current = context;
-      analyserRef.current = analyser;
-      microphoneRef.current = microphone;
-      return true;
-    } catch (error) {
-      console.warn('Microphone unavailable.', error);
-      releaseMicrophone();
-      return false;
+    if (microphoneInitializationRef.current) {
+      return microphoneInitializationRef.current;
     }
-  }, [releaseMicrophone]);
+
+    const initialization = (async () => {
+      let stream: MediaStream | null = null;
+      let context: AudioContext | null = null;
+      let microphone: MediaStreamAudioSourceNode | null = null;
+
+      const releasePendingResources = () => {
+        microphone?.disconnect();
+        stream?.getTracks().forEach(track => track.stop());
+        if (context && context.state !== 'closed') {
+          void context.close().catch(() => undefined);
+        }
+      };
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (generation !== turnGenerationRef.current) {
+          releasePendingResources();
+          return false;
+        }
+
+        const voiceWindow = window as VoiceWindow;
+        const AudioContextConstructor = window.AudioContext ?? voiceWindow.webkitAudioContext;
+        if (!AudioContextConstructor) throw new Error('Web Audio is unavailable.');
+
+        context = new AudioContextConstructor();
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.75;
+
+        microphone = context.createMediaStreamSource(stream);
+        microphone.connect(analyser);
+
+        if (generation !== turnGenerationRef.current) {
+          releasePendingResources();
+          return false;
+        }
+
+        streamRef.current = stream;
+        audioContextRef.current = context;
+        analyserRef.current = analyser;
+        microphoneRef.current = microphone;
+        return true;
+      } catch (error) {
+        console.warn('Microphone unavailable.', error);
+        releasePendingResources();
+        return false;
+      }
+    })();
+
+    microphoneInitializationRef.current = initialization;
+    try {
+      return await initialization;
+    } finally {
+      if (microphoneInitializationRef.current === initialization) {
+        microphoneInitializationRef.current = null;
+      }
+    }
+  }, []);
+
+  const finishListening = useCallback(async () => {
+    if (stateRef.current !== 'listening') return;
+
+    const recorder = wavRecorderRef.current;
+    wavRecorderRef.current = null;
+    if (!recorder) {
+      cancelCurrentTurn();
+      return;
+    }
+
+    const generation = turnGenerationRef.current;
+    setState('processing');
+
+    let abortController: AbortController | null = null;
+    try {
+      const audio = recorder.stop();
+      releaseMicrophone();
+      abortController = new AbortController();
+      transcriptionAbortRef.current = abortController;
+      const text = await transcribeAudio(audio, abortController.signal);
+
+      if (transcriptionAbortRef.current === abortController) {
+        transcriptionAbortRef.current = null;
+      }
+      if (generation !== turnGenerationRef.current) return;
+      if (!text) throw new Error('No speech was detected.');
+
+      setTranscript(turns => [
+        ...turns,
+        {
+          id: createTurnId('user'),
+          sender: 'user',
+          text,
+          timestamp: formatTimestamp()
+        }
+      ]);
+      handleAgentProcessing(text, generation, text);
+    } catch (error) {
+      if (abortController && transcriptionAbortRef.current === abortController) {
+        transcriptionAbortRef.current = null;
+      }
+      releaseMicrophone();
+      if (generation !== turnGenerationRef.current) return;
+
+      console.error('Transcription failed.', error);
+      setTranscript(turns => [
+        ...turns,
+        {
+          id: createTurnId('agent'),
+          sender: 'agent',
+          text: error instanceof Error ? error.message : 'Transcription failed.',
+          timestamp: formatTimestamp()
+        }
+      ]);
+      setState('idle');
+    }
+  }, [cancelCurrentTurn, handleAgentProcessing, releaseMicrophone, setState]);
 
   const toggleListening = useCallback(async () => {
     if (stateRef.current === 'listening') {
-      const recorder = wavRecorderRef.current;
-      wavRecorderRef.current = null;
-      if (!recorder) {
-        cancelCurrentTurn();
-        return;
-      }
+      await finishListening();
+      return;
+    }
 
-      const generation = turnGenerationRef.current;
-      setState('processing');
+    if (microphoneInitializationRef.current) {
+      cancelCurrentTurn();
+      return;
+    }
 
-      try {
-        const audio = recorder.stop();
-        releaseMicrophone();
-        const abortController = new AbortController();
-        transcriptionAbortRef.current = abortController;
-        const text = await transcribeAudio(audio, abortController.signal);
-        transcriptionAbortRef.current = null;
-
-        if (generation !== turnGenerationRef.current) return;
-        if (!text) throw new Error('No speech was detected.');
-
-        setTranscript(turns => [
-          ...turns,
-          {
-            id: createTurnId('user'),
-            sender: 'user',
-            text,
-            timestamp: formatTimestamp()
-          }
-        ]);
-        handleAgentProcessing(text, generation, text);
-      } catch (error) {
-        transcriptionAbortRef.current = null;
-        releaseMicrophone();
-        if (generation !== turnGenerationRef.current) return;
-
-        console.error('Transcription failed.', error);
-        setTranscript(turns => [
-          ...turns,
-          {
-            id: createTurnId('agent'),
-            sender: 'agent',
-            text: error instanceof Error ? error.message : 'Transcription failed.',
-            timestamp: formatTimestamp()
-          }
-        ]);
-        setState('idle');
-      }
+    if (captureStartInProgressRef.current) {
+      cancelCurrentTurn();
       return;
     }
 
@@ -276,33 +335,45 @@ export function useVoiceAgent() {
 
     cancelCurrentTurn();
     const generation = turnGenerationRef.current;
-
-    const hasMicrophone = await initMicrophone();
-    if (generation !== turnGenerationRef.current) return;
-    if (!hasMicrophone) {
-      setTranscript(turns => [
-        ...turns,
-        {
-          id: createTurnId('agent'),
-          sender: 'agent',
-          text: 'Microphone access is unavailable.',
-          timestamp: formatTimestamp()
-        }
-      ]);
-      return;
-    }
+    captureStartInProgressRef.current = true;
 
     try {
+      const hasMicrophone = await initMicrophone(generation);
+      if (generation !== turnGenerationRef.current) return;
+      if (!hasMicrophone) {
+        setTranscript(turns => [
+          ...turns,
+          {
+            id: createTurnId('agent'),
+            sender: 'agent',
+            text: 'Microphone access is unavailable.',
+            timestamp: formatTimestamp()
+          }
+        ]);
+        return;
+      }
+
       const context = audioContextRef.current;
       const microphone = microphoneRef.current;
       if (!context || !microphone) throw new Error('Microphone initialization failed.');
       if (context.state === 'suspended') await context.resume();
 
-      const recorder = new WavRecorder(context, microphone);
+      if (generation !== turnGenerationRef.current) {
+        releaseMicrophone();
+        return;
+      }
+
+      const recorder = new WavRecorder(context, microphone, {
+        onMaxDuration: () => {
+          void finishListening();
+        }
+      });
       recorder.start();
       wavRecorderRef.current = recorder;
       setState('listening');
     } catch (error) {
+      if (generation !== turnGenerationRef.current) return;
+
       console.error('Recording failed.', error);
       releaseMicrophone();
       setTranscript(turns => [
@@ -315,10 +386,12 @@ export function useVoiceAgent() {
         }
       ]);
       setState('idle');
+    } finally {
+      captureStartInProgressRef.current = false;
     }
   }, [
     cancelCurrentTurn,
-    handleAgentProcessing,
+    finishListening,
     initMicrophone,
     releaseMicrophone,
     setState
