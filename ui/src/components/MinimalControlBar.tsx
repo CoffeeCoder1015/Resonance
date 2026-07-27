@@ -14,6 +14,7 @@ import {
   X
 } from 'lucide-react';
 import { AgentState, DESIGN_VARIANTS, VisualTheme } from '../types/voice';
+import { AgentVoiceRing } from './AgentVoiceRing';
 import { AvatarCanvas } from './AvatarCanvas';
 
 interface MinimalControlBarProps {
@@ -53,6 +54,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
 
   const isListening = state === 'listening';
   const isSpeaking = state === 'speaking' || state === 'processing';
+  const agentVoiceLevel = Math.max(0, Math.min(1, volume));
   const activeVariant = DESIGN_VARIANTS.find(variant => variant.id === visualTheme) || DESIGN_VARIANTS[0];
 
   useEffect(() => {
@@ -311,12 +313,13 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
           role="switch"
           aria-checked={agentModeEnabled}
           title={agentModeEnabled ? 'Stop Agent mode' : 'Start Agent mode'}
-          className={`w-11 h-11 rounded-full border-[3px] border-black flex items-center justify-center neo-press ${
-            agentModeEnabled
-              ? 'translate-x-[3px] translate-y-[3px] bg-[#00c853] text-black shadow-[1px_1px_0_0_#000]'
-              : 'bg-[#00e676] text-black neo-shadow'
-          }`}
+          className="agent-mode-button w-11 h-11 rounded-full border-[3px] border-black neo-shadow flex items-center justify-center neo-press"
         >
+          <AgentVoiceRing
+            active={agentModeEnabled}
+            voiceLevel={agentVoiceLevel}
+            frequencies={frequencies}
+          />
           <Bot className="w-5 h-5 stroke-[2.5]" />
         </button>
 
