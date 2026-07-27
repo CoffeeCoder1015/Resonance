@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Bot,
   Check,
   ChevronRight,
   Keyboard,
   Mic,
   MicOff,
   Palette,
-  Repeat2,
   Send,
   Settings2,
   Volume2,
@@ -22,11 +22,11 @@ interface MinimalControlBarProps {
   volume: number;
   frequencies: Uint8Array;
   speechOutputEnabled: boolean;
-  canReplayResponse: boolean;
+  agentModeEnabled: boolean;
   onToggleListen: () => void;
   onSubmitTextTurn: (text: string, reply?: string) => void;
   onToggleSpeechOutput: () => void;
-  onReplayLastResponse: () => void;
+  onToggleAgentMode: () => void;
   onSelectTheme: (theme: VisualTheme) => void;
   onStopSpeech: () => void;
 }
@@ -37,11 +37,11 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
   volume,
   frequencies,
   speechOutputEnabled,
-  canReplayResponse,
+  agentModeEnabled,
   onToggleListen,
   onSubmitTextTurn,
   onToggleSpeechOutput,
-  onReplayLastResponse,
+  onToggleAgentMode,
   onSelectTheme,
   onStopSpeech
 }) => {
@@ -307,12 +307,17 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
 
         <button
           type="button"
-          onClick={onReplayLastResponse}
-          disabled={!speechOutputEnabled || !canReplayResponse}
-          title="Replay last agent response"
-          className="w-11 h-11 rounded-full bg-[#00e676] border-[3px] border-black neo-shadow text-black flex items-center justify-center neo-press disabled:opacity-35 disabled:cursor-not-allowed"
+          onClick={onToggleAgentMode}
+          role="switch"
+          aria-checked={agentModeEnabled}
+          title={agentModeEnabled ? 'Stop Agent mode' : 'Start Agent mode'}
+          className={`w-11 h-11 rounded-full border-[3px] border-black flex items-center justify-center neo-press ${
+            agentModeEnabled
+              ? 'translate-x-[3px] translate-y-[3px] bg-[#00c853] text-black shadow-[1px_1px_0_0_#000]'
+              : 'bg-[#00e676] text-black neo-shadow'
+          }`}
         >
-          <Repeat2 className="w-5 h-5 stroke-[2.5]" />
+          <Bot className="w-5 h-5 stroke-[2.5]" />
         </button>
 
         <button

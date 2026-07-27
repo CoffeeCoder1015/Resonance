@@ -29,15 +29,16 @@ export function App() {
     visualTheme,
     transcript,
     speechOutputEnabled,
-    canReplayResponse,
+    agentModeEnabled,
     currentSpeechVolume,
     audioFrequencies,
     toggleListening,
     beginHoldToTalk,
     endHoldToTalk,
+    enableAgentMode,
+    disableAgentMode,
     submitTextTurn,
     toggleSpeechOutput,
-    replayLastResponse,
     selectTheme,
     stopAgentSpeech
   } = useVoiceAgent();
@@ -96,6 +97,9 @@ export function App() {
 
   const statusInfo = getStatusDescription(phase);
   const activeVariant = DESIGN_VARIANTS.find(v => v.id === visualTheme) || DESIGN_VARIANTS[0];
+  const toggleAgentMode = () => {
+    void (agentModeEnabled ? disableAgentMode() : enableAgentMode());
+  };
 
   return (
     <div
@@ -153,11 +157,11 @@ export function App() {
         volume={currentSpeechVolume}
         frequencies={audioFrequencies}
         speechOutputEnabled={speechOutputEnabled}
-        canReplayResponse={canReplayResponse}
+        agentModeEnabled={agentModeEnabled}
         onToggleListen={toggleListening}
         onSubmitTextTurn={submitTextTurn}
         onToggleSpeechOutput={toggleSpeechOutput}
-        onReplayLastResponse={replayLastResponse}
+        onToggleAgentMode={toggleAgentMode}
         onSelectTheme={selectTheme}
         onStopSpeech={stopAgentSpeech}
       />
