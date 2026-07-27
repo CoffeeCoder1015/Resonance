@@ -16,6 +16,7 @@ import {
 import { AgentState, DESIGN_VARIANTS, VisualTheme } from '../types/voice';
 import { AgentVoiceRing } from './AgentVoiceRing';
 import { AvatarCanvas } from './AvatarCanvas';
+import { ProviderSettingsPanel } from './ProviderSettingsPanel';
 
 interface MinimalControlBarProps {
   state: AgentState;
@@ -25,7 +26,7 @@ interface MinimalControlBarProps {
   speechOutputEnabled: boolean;
   agentModeEnabled: boolean;
   onToggleListen: () => void;
-  onSubmitTextTurn: (text: string, reply?: string) => void;
+  onSubmitTextTurn: (text: string) => void;
   onToggleSpeechOutput: () => void;
   onToggleAgentMode: () => void;
   onSelectTheme: (theme: VisualTheme) => void;
@@ -48,6 +49,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
 }) => {
   const [showTextInput, setShowTextInput] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'avatar' | 'provider'>('avatar');
   const [inputText, setInputText] = useState('');
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -143,104 +145,130 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
                 </p>
                 <div role="tablist" aria-orientation="vertical">
                   <button
+                    id="avatar-settings-tab"
                     type="button"
                     role="tab"
-                    aria-selected="true"
+                    aria-selected={settingsSection === 'avatar'}
                     aria-controls="avatar-settings-panel"
-                    className="flex w-full items-center gap-2 rounded-xl border-[3px] border-black bg-[#ffde00] px-2.5 py-3 text-left neo-shadow neo-press"
+                    onClick={() => setSettingsSection('avatar')}
+                    className={`flex w-full items-center gap-2 rounded-xl border-[3px] border-black px-2.5 py-3 text-left neo-press ${
+                      settingsSection === 'avatar' ? 'bg-[#ffde00] neo-shadow' : 'bg-white'
+                    }`}
                   >
                     <Palette className="h-4 w-4 shrink-0 stroke-[2.5]" />
                     <span className="min-w-0 flex-1 truncate text-xs font-black sm:text-sm">Avatar</span>
                     <ChevronRight className="h-4 w-4 shrink-0 stroke-[3]" />
                   </button>
+                  <button
+                    id="provider-settings-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsSection === 'provider'}
+                    aria-controls="provider-settings-panel"
+                    onClick={() => setSettingsSection('provider')}
+                    className={`mt-3 flex w-full items-center gap-2 rounded-xl border-[3px] border-black px-2.5 py-3 text-left neo-press ${
+                      settingsSection === 'provider' ? 'bg-[#ffde00] neo-shadow' : 'bg-white'
+                    }`}
+                  >
+                    <Bot className="h-4 w-4 shrink-0 stroke-[2.5]" />
+                    <span className="min-w-0 flex-1 truncate text-xs font-black sm:text-sm">
+                      Provider
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 stroke-[3]" />
+                  </button>
                 </div>
               </aside>
 
-              <div
-                id="avatar-settings-panel"
-                role="tabpanel"
-                className="min-w-0 overflow-y-auto no-scrollbar p-4 sm:p-5"
-              >
-                <div className="mb-4 flex items-end justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-[9px] font-black uppercase tracking-[0.16em] text-black/45">
-                      Appearance
-                    </p>
-                    <h3 className="text-lg font-black tracking-tight sm:text-xl">Avatar</h3>
-                    <p className="mt-0.5 text-xs font-semibold text-black/55 sm:text-sm">
-                      Choose how your visual voice looks and moves.
-                    </p>
-                  </div>
-                  <span className="shrink-0 rounded-lg bg-black px-2.5 py-1 font-mono text-[9px] font-black uppercase tracking-wider text-white">
-                    {activeVariant.badge}
-                  </span>
-                </div>
-
+              {settingsSection === 'avatar' ? (
                 <div
-                  data-testid="settings-avatar-preview"
-                  style={{
-                    backgroundColor: activeVariant.bgHex,
-                    backgroundImage: `radial-gradient(circle at 50% 0%, ${activeVariant.accentHex}55 0%, transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.24), transparent 65%)`
-                  }}
-                  className="relative mb-5 h-44 overflow-hidden rounded-[1.5rem] border-[3px] border-black neo-shadow sm:h-52"
+                  id="avatar-settings-panel"
+                  role="tabpanel"
+                  aria-labelledby="avatar-settings-tab"
+                  className="min-w-0 overflow-y-auto no-scrollbar p-4 sm:p-5"
                 >
-                  <span className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border-2 border-black bg-white/85 px-2 py-1 font-mono text-[9px] font-black uppercase tracking-wider backdrop-blur-sm">
-                    Live preview
-                  </span>
-                  <AvatarCanvas
-                    state={state}
-                    visualTheme={visualTheme}
-                    volume={volume}
-                    frequencies={frequencies}
-                    preview
-                  />
-                </div>
+                  <div className="mb-4 flex items-end justify-between gap-3">
+                    <div>
+                      <p className="font-mono text-[9px] font-black uppercase tracking-[0.16em] text-black/45">
+                        Appearance
+                      </p>
+                      <h3 className="text-lg font-black tracking-tight sm:text-xl">Avatar</h3>
+                      <p className="mt-0.5 text-xs font-semibold text-black/55 sm:text-sm">
+                        Choose how your visual voice looks and moves.
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-lg bg-black px-2.5 py-1 font-mono text-[9px] font-black uppercase tracking-wider text-white">
+                      {activeVariant.badge}
+                    </span>
+                  </div>
 
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <h4 className="text-sm font-black">Avatar styles</h4>
-                  <span className="font-mono text-[9px] font-black uppercase tracking-[0.14em] text-black/45">
-                    {DESIGN_VARIANTS.length} available
-                  </span>
-                </div>
+                  <div
+                    data-testid="settings-avatar-preview"
+                    style={{
+                      backgroundColor: activeVariant.bgHex,
+                      backgroundImage: `radial-gradient(circle at 50% 0%, ${activeVariant.accentHex}55 0%, transparent 60%), linear-gradient(135deg, rgba(255,255,255,0.24), transparent 65%)`
+                    }}
+                    className="relative mb-5 h-44 overflow-hidden rounded-[1.5rem] border-[3px] border-black neo-shadow sm:h-52"
+                  >
+                    <span className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border-2 border-black bg-white/85 px-2 py-1 font-mono text-[9px] font-black uppercase tracking-wider backdrop-blur-sm">
+                      Live preview
+                    </span>
+                    <AvatarCanvas
+                      state={state}
+                      visualTheme={visualTheme}
+                      volume={volume}
+                      frequencies={frequencies}
+                      preview
+                    />
+                  </div>
 
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  {DESIGN_VARIANTS.map(variant => {
-                    const isSelected = variant.id === visualTheme;
-                    return (
-                      <button
-                        type="button"
-                        key={variant.id}
-                        onClick={() => onSelectTheme(variant.id)}
-                        aria-pressed={isSelected}
-                        style={{ backgroundColor: variant.bgHex }}
-                        className={`relative min-h-28 overflow-hidden flex flex-col items-start p-4 rounded-2xl border-[3px] border-black text-left neo-press ${
-                          isSelected ? 'neo-shadow-lg' : 'neo-shadow'
-                        }`}
-                      >
-                        <span
-                          className="absolute -right-6 -top-6 w-20 h-20 rounded-full opacity-65 border-[3px] border-black"
-                          style={{ backgroundColor: variant.accentHex }}
-                          aria-hidden="true"
-                        />
-                        <div className="relative flex items-center justify-between w-full mb-2 gap-2">
-                          <span className="text-[10px] font-mono font-extrabold px-2 py-1 bg-black text-white rounded-md">
-                            {variant.badge}
-                          </span>
-                          {isSelected && (
-                            <span className="w-6 h-6 shrink-0 rounded-full bg-[#00e676] border-2 border-black flex items-center justify-center">
-                              <Check className="w-3.5 h-3.5 text-black stroke-[3]" />
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-black">Avatar styles</h4>
+                    <span className="font-mono text-[9px] font-black uppercase tracking-[0.14em] text-black/45">
+                      {DESIGN_VARIANTS.length} available
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {DESIGN_VARIANTS.map(variant => {
+                      const isSelected = variant.id === visualTheme;
+                      return (
+                        <button
+                          type="button"
+                          key={variant.id}
+                          onClick={() => onSelectTheme(variant.id)}
+                          aria-pressed={isSelected}
+                          style={{ backgroundColor: variant.bgHex }}
+                          className={`relative min-h-28 overflow-hidden flex flex-col items-start p-4 rounded-2xl border-[3px] border-black text-left neo-press ${
+                            isSelected ? 'neo-shadow-lg' : 'neo-shadow'
+                          }`}
+                        >
+                          <span
+                            className="absolute -right-6 -top-6 w-20 h-20 rounded-full opacity-65 border-[3px] border-black"
+                            style={{ backgroundColor: variant.accentHex }}
+                            aria-hidden="true"
+                          />
+                          <div className="relative flex items-center justify-between w-full mb-2 gap-2">
+                            <span className="text-[10px] font-mono font-extrabold px-2 py-1 bg-black text-white rounded-md">
+                              {variant.badge}
                             </span>
-                          )}
-                        </div>
-                        <p className="relative text-sm font-black leading-tight pr-8">{variant.name}</p>
-                        <p className="relative mt-2 text-[11px] leading-relaxed text-black/65 font-semibold line-clamp-3">
-                          {variant.philosophy}
-                        </p>
-                      </button>
-                    );
-                  })}
+                            {isSelected && (
+                              <span className="w-6 h-6 shrink-0 rounded-full bg-[#00e676] border-2 border-black flex items-center justify-center">
+                                <Check className="w-3.5 h-3.5 text-black stroke-[3]" />
+                              </span>
+                            )}
+                          </div>
+                          <p className="relative text-sm font-black leading-tight pr-8">{variant.name}</p>
+                          <p className="relative mt-2 text-[11px] leading-relaxed text-black/65 font-semibold line-clamp-3">
+                            {variant.philosophy}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <ProviderSettingsPanel />
+              )}
             </div>
           </section>
         </div>

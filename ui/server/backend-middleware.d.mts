@@ -2,11 +2,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 type Next = () => void;
 
-interface AsrMiddlewareOptions {
+interface BackendMiddlewareOptions {
   timeoutMs?: number;
 }
 
-export function createAsrMiddleware(options?: AsrMiddlewareOptions): (
+export function createBackendMiddleware(options?: BackendMiddlewareOptions): (
   request: IncomingMessage,
   response: ServerResponse,
   next: Next

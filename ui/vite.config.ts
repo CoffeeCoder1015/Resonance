@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
-import { createAsrMiddleware } from "./server/asr-middleware.mjs";
+import { createBackendMiddleware } from "./server/backend-middleware.mjs";
 import {
   copyVadAssets,
   createVadAssetMiddleware,
@@ -29,12 +29,12 @@ export default defineConfig({
       },
     },
     {
-      name: "resonance-asr-server",
+      name: "resonance-backend-server",
       configureServer(server) {
-        server.middlewares.use(createAsrMiddleware());
+        server.middlewares.use(createBackendMiddleware());
       },
       configurePreviewServer(server) {
-        server.middlewares.use(createAsrMiddleware());
+        server.middlewares.use(createBackendMiddleware());
       },
     },
     react(),

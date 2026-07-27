@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { createAsrMiddleware } from './asr-middleware.mjs';
+import { createBackendMiddleware } from './backend-middleware.mjs';
 import { createVadAssetMap, createVadAssetMiddleware } from './vad-assets.mjs';
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -10,13 +10,13 @@ const indexPath = path.resolve(serverDirectory, '../dist/index.html');
 const vadAssetDirectory = path.resolve(serverDirectory, '../dist/vad');
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 4173);
-const handleAsr = createAsrMiddleware();
+const handleBackend = createBackendMiddleware();
 const handleVadAssets = createVadAssetMiddleware({
   assets: createVadAssetMap(vadAssetDirectory)
 });
 
 const server = createServer((request, response) => {
-  void handleAsr(request, response, async () => {
+  void handleBackend(request, response, async () => {
     void handleVadAssets(request, response, async () => {
       const pathname = new URL(request.url || '/', 'http://resonance.local').pathname;
       if (request.method !== 'GET' || (pathname !== '/' && pathname !== '/index.html')) {

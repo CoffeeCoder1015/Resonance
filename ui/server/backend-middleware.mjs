@@ -1,0 +1,179 @@
+import { createBackendClient } from './backend-client.mjs';
+
+const VOICE_TURNS_ROUTE = '/api/voice/turns';
+const TEXT_TURNS_ROUTE = '/api/text/turns';
+const PROVIDERS_ROUTE = '/api/providers';
+const CURRENT_PROVIDER_ROUTE = '/api/providers/current';
+const TURN_ROUTE = /^\/api\/turns\/([^/]+)$/;
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_JSON_BYTES = 64 * 1024;
+const DEFAULT_BACKEND_TIMEOUT_MS = 120_000;
+
+function createHttpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function sendJson(response, statusCode, body) {
+  response.statusCode = statusCode;
+  response.setHeader('Content-Type', 'application/json; charset=utf-8');
+  response.setHeader('Cache-Control', 'no-store');
+  response.end(JSON.stringify(body));
+}
+
+function getFilename(contentType) {
+  const normalizedType = contentType.split(';', 1)[0].trim();
+  const extension =
+    normalizedType === 'audio/webm'
+      ? 'webm'
+      : normalizedType === 'audio/ogg'
+        ? 'ogg'
+        : normalizedType === 'audio/mp4'
+          ? 'm4a'
+          : normalizedType === 'audio/wav'
+            ? 'wav'
+            : 'audio';
+
+  return `recording.${extension}`;
+}
+
+async function readBody(request, maximumBytes) {
+  const declaredLength = Number(request.headers['content-length'] || 0);
+  if (declaredLength > maximumBytes) {
+    throw createHttpError('Request body is too large.', 413);
+  }
+
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    totalBytes += chunk.length;
+    if (totalBytes > maximumBytes) {
+      throw createHttpError('Request body is too large.', 413);
+    }
+    chunks.push(chunk);
+  }
+
+  if (totalBytes === 0) {
+    throw createHttpError('Request body is empty.', 400);
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function readJson(request) {
+  const body = await readBody(request, MAX_JSON_BYTES);
+  try {
+    return JSON.parse(body.toString('utf8'));
+  } catch {
+    throw createHttpError('Request body must be valid JSON.', 400);
+  }
+}
+
+function routeRequest(pathname, method) {
+  if (pathname === VOICE_TURNS_ROUTE) {
+    return method === 'POST' ? 'createVoiceTurn' : 'methodNotAllowed';
+  }
+  if (pathname === TEXT_TURNS_ROUTE) {
+    return method === 'POST' ? 'createTextTurn' : 'methodNotAllowed';
+  }
+  if (pathname === PROVIDERS_ROUTE) {
+    return method === 'GET' ? 'getProviders' : 'methodNotAllowed';
+  }
+  if (pathname === CURRENT_PROVIDER_ROUTE) {
+    return method === 'PUT' ? 'setProvider' : 'methodNotAllowed';
+  }
+
+  const turnMatch = pathname.match(TURN_ROUTE);
+  if (turnMatch) {
+    return method === 'GET' ? { name: 'getTurn', turnId: turnMatch[1] } : 'methodNotAllowed';
+  }
+  return null;
+}
+
+export function createBackendMiddleware({
+  client = createBackendClient(),
+  logger = console,
+  timeoutMs = Number(process.env.BACKEND_TIMEOUT_MS) || DEFAULT_BACKEND_TIMEOUT_MS
+} = {}) {
+  return async function backendMiddleware(request, response, next) {
+    const pathname = new URL(request.url || '/', 'http://resonance.local').pathname;
+    const route = routeRequest(pathname, request.method || 'GET');
+    if (route === null) {
+      next();
+      return;
+    }
+    if (route === 'methodNotAllowed') {
+      sendJson(response, 405, { error: 'Method not allowed.' });
+      return;
+    }
+
+    const abortController = new AbortController();
+    const abortForDisconnect = () => {
+      if (!response.writableFinished) {
+        abortController.abort(createHttpError('Client disconnected.', 499));
+      }
+    };
+    const timeoutId = setTimeout(() => {
+      abortController.abort(createHttpError('Backend request timed out.', 504));
+    }, timeoutMs);
+    request.once('aborted', abortForDisconnect);
+    response.once('close', abortForDisconnect);
+
+    try {
+      let result;
+      if (route === 'createVoiceTurn') {
+        const contentType = String(request.headers['content-type'] || '');
+        if (!contentType.toLowerCase().startsWith('audio/')) {
+          throw createHttpError('An audio content type is required.', 415);
+        }
+        result = await client.createVoiceTurn({
+          audio: await readBody(request, MAX_AUDIO_BYTES),
+          contentType,
+          filename: getFilename(contentType),
+          signal: abortController.signal
+        });
+      } else if (route === 'createTextTurn') {
+        const body = await readJson(request);
+        result = await client.createTextTurn({
+          text: body.text,
+          signal: abortController.signal
+        });
+      } else if (route === 'getProviders') {
+        result = await client.getProviders({ signal: abortController.signal });
+      } else if (route === 'setProvider') {
+        const body = await readJson(request);
+        result = await client.setProvider({
+          provider: body.provider,
+          signal: abortController.signal
+        });
+      } else {
+        result = await client.getTurn({
+          turnId: route.turnId,
+          signal: abortController.signal
+        });
+      }
+
+      if (!response.destroyed && !response.writableEnded) {
+        if (route === 'createVoiceTurn' || route === 'createTextTurn') {
+          response.setHeader('Location', `/api/turns/${result.id}`);
+          response.setHeader('Retry-After', '1');
+        }
+        sendJson(response, route === 'createVoiceTurn' || route === 'createTextTurn' ? 202 : 200, result);
+      }
+    } catch (error) {
+      if (response.destroyed || response.writableEnded) return;
+
+      const errorStatus = typeof error?.statusCode === 'number' ? error.statusCode : null;
+      const statusCode =
+        errorStatus !== null && errorStatus >= 400 && errorStatus < 600 ? errorStatus : 502;
+      logger.error('[backend]', error);
+      sendJson(response, statusCode, {
+        error: statusCode === 502 ? 'Resonance backend is unavailable.' : error.message
+      });
+    } finally {
+      clearTimeout(timeoutId);
+      request.off('aborted', abortForDisconnect);
+      response.off('close', abortForDisconnect);
+    }
+  };
+}

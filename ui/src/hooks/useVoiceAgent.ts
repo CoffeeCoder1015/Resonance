@@ -6,7 +6,11 @@ import type {
   VoiceInputMode,
   VoicePhase
 } from '../types/voice';
-import { transcribeAudio } from '../services/asr';
+import {
+  createTextTurn,
+  createVoiceTurn,
+  waitForTurn
+} from '../services/backend';
 import { MicrophoneCapture } from '../services/microphoneCapture';
 import { formatTimestamp } from '../utils/dialogueEngine';
 import { useAudioVisualization } from './useAudioVisualization';
@@ -63,7 +67,7 @@ export function useVoiceAgent() {
   const captureStartupAbortRef = useRef<AbortController | null>(null);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const finishingCaptureRef = useRef<MicrophoneCapture | null>(null);
-  const transcriptionAbortRef = useRef<AbortController | null>(null);
+  const turnAbortRef = useRef<AbortController | null>(null);
 
   const {
     enabled: speechOutputEnabled,
@@ -103,8 +107,8 @@ export function useVoiceAgent() {
     holdReleasePendingRef.current = false;
 
     captureStartupAbortRef.current?.abort();
-    transcriptionAbortRef.current?.abort();
-    transcriptionAbortRef.current = null;
+    turnAbortRef.current?.abort();
+    turnAbortRef.current = null;
     cancelSpeech();
 
     const capture = captureRef.current;
@@ -203,12 +207,14 @@ export function useVoiceAgent() {
     [appendTurn, setPhase, settleTurn, speak]
   );
 
-  const processTranscript = useCallback(
-    (userPrompt: string, generation: number, overrideReply?: string) => {
+  const receiveAgentResponse = useCallback(
+    async (turnId: string, generation: number, signal: AbortSignal) => {
       if (generation !== turnGenerationRef.current) return;
 
       setPhase('responding');
-      startResponseOutput(overrideReply ?? userPrompt, generation);
+      const turn = await waitForTurn(turnId, signal);
+      if (generation !== turnGenerationRef.current) return;
+      startResponseOutput(turn.response!, generation);
     },
     [setPhase, startResponseOutput]
   );
@@ -219,30 +225,28 @@ export function useVoiceAgent() {
 
       setPhase('transcribing');
       const abortController = new AbortController();
-      transcriptionAbortRef.current = abortController;
+      turnAbortRef.current = abortController;
 
       try {
-        const text = await transcribeAudio(audio, abortController.signal);
-        if (transcriptionAbortRef.current === abortController) {
-          transcriptionAbortRef.current = null;
-        }
+        const turn = await createVoiceTurn(audio, abortController.signal);
         if (generation !== turnGenerationRef.current) return;
-        if (!text) throw new Error('No speech was detected.');
+        if (!turn.transcript) throw new Error('No speech was detected.');
 
-        appendTurn('user', text);
-        processTranscript(text, generation, text);
+        appendTurn('user', turn.transcript);
+        await receiveAgentResponse(turn.id, generation, abortController.signal);
       } catch (error) {
-        if (transcriptionAbortRef.current === abortController) {
-          transcriptionAbortRef.current = null;
-        }
         if (generation !== turnGenerationRef.current) return;
 
-        console.error('Transcription failed.', error);
-        appendTurn('agent', getErrorMessage(error, 'Transcription failed.'));
+        console.error('Voice turn failed.', error);
+        appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
         settleTurn(generation);
+      } finally {
+        if (turnAbortRef.current === abortController) {
+          turnAbortRef.current = null;
+        }
       }
     },
-    [appendTurn, processTranscript, setPhase, settleTurn]
+    [appendTurn, receiveAgentResponse, setPhase, settleTurn]
   );
 
   const finishCaptureAndTranscribe = useCallback(
@@ -463,7 +467,7 @@ export function useVoiceAgent() {
   }, [prepareForTurn, resumeAgentListening, setAgentMode]);
 
   const submitTextTurn = useCallback(
-    (userText: string, agentReply?: string) => {
+    (userText: string) => {
       const text = userText.trim();
       if (!text) return;
 
@@ -471,10 +475,32 @@ export function useVoiceAgent() {
         const generation = await prepareForTurn();
         if (generation !== turnGenerationRef.current) return;
         appendTurn('user', text);
-        processTranscript(text, generation, agentReply);
+
+        const abortController = new AbortController();
+        turnAbortRef.current = abortController;
+        setPhase('responding');
+        try {
+          const turn = await createTextTurn(text, abortController.signal);
+          await receiveAgentResponse(turn.id, generation, abortController.signal);
+        } catch (error) {
+          if (generation !== turnGenerationRef.current) return;
+          console.error('Text turn failed.', error);
+          appendTurn('agent', getErrorMessage(error, 'Agent response failed.'));
+          settleTurn(generation);
+        } finally {
+          if (turnAbortRef.current === abortController) {
+            turnAbortRef.current = null;
+          }
+        }
       })();
     },
-    [appendTurn, prepareForTurn, processTranscript]
+    [
+      appendTurn,
+      prepareForTurn,
+      receiveAgentResponse,
+      setPhase,
+      settleTurn
+    ]
   );
 
   const selectTheme = useCallback((theme: VisualTheme) => {
@@ -492,8 +518,8 @@ export function useVoiceAgent() {
     () => () => {
       turnGenerationRef.current += 1;
       captureStartupAbortRef.current?.abort();
-      transcriptionAbortRef.current?.abort();
-      transcriptionAbortRef.current = null;
+      turnAbortRef.current?.abort();
+      turnAbortRef.current = null;
       const capture = captureRef.current;
       captureRef.current = null;
       if (capture) void capture.dispose();

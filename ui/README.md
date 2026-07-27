@@ -1,27 +1,23 @@
 # Resonance UI
 
-The browser sends recorded audio to the same-origin website-server route:
+The browser sends recorded audio to the same-origin website server:
 
 ```text
-POST /api/asr/transcriptions
+POST /api/voice/turns
 Content-Type: audio/wav
 ```
 
-The website server owns the ASR provider. Its current provider forwards audio to
-the local Hugging Face Whisper service and returns `{ "text": "..." }`. Replace
-`server/asr-provider.mjs` when Whisper moves in-process; the browser contract
-does not change.
+The website server forwards the turn to the Resonance backend. The backend
+transcribes it, starts the selected agent CLI, and returns a turn ID. The browser
+polls `GET /api/turns/{id}` for the completed response.
 
 Browser voice turns automatically finalize after 60 seconds so capture memory
 and inference work remain bounded.
 
 Configuration:
 
-- `WHISPER_ENDPOINT` defaults to
-  `http://127.0.0.1:8000/v1/audio/transcriptions`.
-- `WHISPER_MODEL` defaults to `openai/whisper-base.en`.
-- `ASR_TIMEOUT_MS` defaults to `120000` and bounds each website-server
-  transcription request.
+- `RESONANCE_BACKEND_ORIGIN` defaults to `http://127.0.0.1:8000`.
+- `BACKEND_TIMEOUT_MS` defaults to `120000`.
 - `HOST` and `PORT` configure the production website server.
 
 Development:
