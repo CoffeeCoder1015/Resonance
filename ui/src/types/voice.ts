@@ -1,5 +1,7 @@
 export type AgentState = 'idle' | 'listening' | 'processing' | 'speaking';
 
+export type VoiceInputMode = 'hold' | 'tap' | 'agent';
+
 export type VoicePhase =
   | 'idle'
   | 'acquiring-microphone'

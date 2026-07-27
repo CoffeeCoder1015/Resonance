@@ -1,10 +1,17 @@
-import { WavRecorder } from './wavRecorder';
+import { MicVAD } from '@ricky0123/vad-web';
+import type { VoiceInputMode } from '../types/voice';
+import { SpeechSegmentBuffer } from './speechSegmentBuffer';
+
+const VAD_ASSET_PATH = '/vad/';
+const MAX_CAPTURE_DURATION_MS = 60_000;
 
 interface VoiceWindow extends Window {
   webkitAudioContext?: typeof AudioContext;
 }
 
 interface StartCaptureOptions {
+  mode: VoiceInputMode;
+  onUtterance: () => void;
   onMaxDuration?: () => void;
 }
 
@@ -15,14 +22,20 @@ function closeAudioContext(context: AudioContext) {
 }
 
 export class MicrophoneCapture {
-  private recorder: WavRecorder | null = null;
+  private readonly segments = new SpeechSegmentBuffer();
+  private mode: VoiceInputMode = 'tap';
+  private onUtterance: () => void = () => undefined;
+  private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  private finishing = false;
+  private readyNotified = false;
 
   private constructor(
     private readonly stream: MediaStream,
     private readonly context: AudioContext,
     private readonly microphone: MediaStreamAudioSourceNode,
-    readonly analyser: AnalyserNode
+    readonly analyser: AnalyserNode,
+    private readonly vad: MicVAD
   ) {}
 
   static async open(signal?: AbortSignal): Promise<MicrophoneCapture> {
@@ -30,7 +43,15 @@ export class MicrophoneCapture {
       throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        autoGainControl: true,
+        noiseSuppression: true
+      },
+      video: false
+    });
     if (signal?.aborted) {
       stream.getTracks().forEach(track => track.stop());
       throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
@@ -38,6 +59,8 @@ export class MicrophoneCapture {
 
     let context: AudioContext | null = null;
     let microphone: MediaStreamAudioSourceNode | null = null;
+    let vad: MicVAD | null = null;
+    let capture: MicrophoneCapture | null = null;
 
     try {
       const voiceWindow = window as VoiceWindow;
@@ -52,8 +75,38 @@ export class MicrophoneCapture {
       microphone = context.createMediaStreamSource(stream);
       microphone.connect(analyser);
 
-      return new MicrophoneCapture(stream, context, microphone, analyser);
+      vad = await MicVAD.new({
+        model: 'v5',
+        startOnLoad: true,
+        processorType: 'auto',
+        audioContext: context,
+        baseAssetPath: VAD_ASSET_PATH,
+        onnxWASMBasePath: VAD_ASSET_PATH,
+        positiveSpeechThreshold: 0.5,
+        negativeSpeechThreshold: 0.35,
+        redemptionMs: 750,
+        preSpeechPadMs: 300,
+        minSpeechMs: 250,
+        submitUserSpeechOnPause: true,
+        getStream: async () => stream,
+        pauseStream: async () => undefined,
+        resumeStream: async () => stream,
+        ortConfig: ort => {
+          ort.env.wasm.numThreads = 1;
+          ort.env.wasm.proxy = false;
+          ort.env.logLevel = 'error';
+        },
+        onSpeechEnd: audio => capture?.handleSpeechEnd(audio)
+      });
+
+      if (signal?.aborted) {
+        throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
+      }
+
+      capture = new MicrophoneCapture(stream, context, microphone, analyser, vad);
+      return capture;
     } catch (error) {
+      if (vad) await vad.destroy().catch(() => undefined);
       microphone?.disconnect();
       stream.getTracks().forEach(track => track.stop());
       if (context) closeAudioContext(context);
@@ -61,40 +114,87 @@ export class MicrophoneCapture {
     }
   }
 
-  async start({ onMaxDuration }: StartCaptureOptions = {}) {
+  async start({ mode, onUtterance, onMaxDuration }: StartCaptureOptions) {
     this.assertActive();
-    if (this.recorder) throw new Error('Recording is already active.');
+    this.mode = mode;
+    this.onUtterance = onUtterance;
+    this.finishing = false;
+    this.readyNotified = false;
+
     if (this.context.state === 'suspended') await this.context.resume();
+    if (!this.vad.listening) await this.vad.start();
     this.assertActive();
 
-    const recorder = new WavRecorder(this.context, this.microphone, { onMaxDuration });
-    try {
-      recorder.start();
-      this.recorder = recorder;
-    } catch (error) {
-      recorder.cancel();
-      throw error;
+    this.clearMaxDurationTimer();
+    if (mode !== 'agent' && onMaxDuration) {
+      this.maxDurationTimer = setTimeout(onMaxDuration, MAX_CAPTURE_DURATION_MS);
     }
   }
 
-  stop(): Blob {
+  async finish(): Promise<Blob | null> {
     this.assertActive();
-    const recorder = this.recorder;
-    if (!recorder) throw new Error('Recording is not active.');
+    this.finishing = true;
+    this.clearMaxDurationTimer();
 
-    this.recorder = null;
-    return recorder.stop();
+    try {
+      if (this.vad.listening) await this.vad.pause();
+      return this.segments.drainWav();
+    } finally {
+      this.finishing = false;
+    }
   }
 
-  dispose() {
+  async discardAndPause() {
+    if (this.disposed) return;
+    this.finishing = true;
+    this.clearMaxDurationTimer();
+    try {
+      if (this.vad.listening) await this.vad.pause();
+      this.segments.clear();
+    } finally {
+      this.finishing = false;
+    }
+  }
+
+  async resume() {
+    this.assertActive();
+    this.segments.clear();
+    this.readyNotified = false;
+    this.finishing = false;
+    if (this.context.state === 'suspended') await this.context.resume();
+    if (!this.vad.listening) await this.vad.start();
+  }
+
+  async dispose() {
     if (this.disposed) return;
     this.disposed = true;
-
-    this.recorder?.cancel();
-    this.recorder = null;
-    this.microphone.disconnect();
+    this.clearMaxDurationTimer();
     this.stream.getTracks().forEach(track => track.stop());
+    await this.vad.destroy().catch(() => undefined);
+    this.microphone.disconnect();
+    this.segments.clear();
     closeAudioContext(this.context);
+  }
+
+  private handleSpeechEnd(audio: Float32Array) {
+    if (this.disposed) return;
+    this.segments.append(audio);
+
+    if (
+      !this.finishing &&
+      !this.readyNotified &&
+      (this.mode === 'tap' || this.mode === 'agent')
+    ) {
+      this.readyNotified = true;
+      queueMicrotask(this.onUtterance);
+    }
+  }
+
+  private clearMaxDurationTimer() {
+    if (this.maxDurationTimer !== null) {
+      clearTimeout(this.maxDurationTimer);
+      this.maxDurationTimer = null;
+    }
   }
 
   private assertActive() {
