@@ -10,6 +10,46 @@ const Caret = () => (
   <span className="inline-block w-[3px] h-[1em] ml-1 bg-current align-[-0.12em] animate-pulse rounded-[1px]" />
 );
 
+function setNeutralWheelStyle(element: HTMLElement) {
+  element.style.setProperty('--wheel-opacity', '1');
+  element.style.setProperty('--wheel-angle', '0deg');
+  element.style.setProperty('--wheel-y', '0px');
+  element.style.setProperty('--wheel-z', '0px');
+  element.style.setProperty('--wheel-blur', '0px');
+  element.style.setProperty('--wheel-brightness', '1');
+}
+
+function setHiddenWheelStyle(element: HTMLElement) {
+  element.style.setProperty('--wheel-opacity', '0');
+  element.style.setProperty('--wheel-angle', '0deg');
+  element.style.setProperty('--wheel-y', '0px');
+  element.style.setProperty('--wheel-z', '0px');
+  element.style.setProperty('--wheel-blur', '0px');
+  element.style.setProperty('--wheel-brightness', '1');
+}
+
+function applyWheelStyle(
+  element: HTMLElement,
+  normalizedPosition: number,
+  linearOffset: number,
+  cylinderRadius: number,
+  maximumAngleRadians: number,
+  maximumAngleDegrees: number,
+  edgeAmount: number
+) {
+  const angleRadians = normalizedPosition * maximumAngleRadians;
+  const desiredOffset = Math.sin(angleRadians) * cylinderRadius;
+  const cylinderShift = desiredOffset - linearOffset;
+  const depth = cylinderRadius * (Math.cos(angleRadians) - 1);
+
+  element.style.setProperty('--wheel-opacity', String(1 - edgeAmount * 0.96));
+  element.style.setProperty('--wheel-angle', `${normalizedPosition * -maximumAngleDegrees}deg`);
+  element.style.setProperty('--wheel-y', `${cylinderShift}px`);
+  element.style.setProperty('--wheel-z', `${depth}px`);
+  element.style.setProperty('--wheel-blur', `${Math.pow(edgeAmount, 1.55) * 5.5}px`);
+  element.style.setProperty('--wheel-brightness', String(1 - edgeAmount * 0.14));
+}
+
 export const TranscriptLog: React.FC<TranscriptLogProps> = ({
   transcript,
   agentState
@@ -26,64 +66,103 @@ export const TranscriptLog: React.FC<TranscriptLogProps> = ({
     const viewport = scrollArea.getBoundingClientRect();
     const viewportCenter = viewport.top + viewport.height / 2;
     const wheelHalfHeight = Math.max(viewport.height / 2, 1);
+    const baseFocusHalfHeight = wheelHalfHeight * 0.34;
+    const rollTravel = Math.max(wheelHalfHeight - baseFocusHalfHeight, 1);
     const edgeFadeZone = Math.min(84, Math.max(48, viewport.height * 0.2));
     const maximumAngleDegrees = 56;
     const maximumAngleRadians = (maximumAngleDegrees * Math.PI) / 180;
-    const cylinderRadius = wheelHalfHeight / Math.sin(maximumAngleRadians);
+    const classicCylinderRadius = wheelHalfHeight / Math.sin(maximumAngleRadians);
+    const scaledCylinderRadius = rollTravel / Math.sin(maximumAngleRadians);
 
     scrollArea.querySelectorAll<HTMLElement>('[data-transcript-turn]').forEach(slot => {
       const turn = slot.querySelector<HTMLElement>('[data-transcript-visual]');
       if (!turn) return;
 
       if (!wheelIsActive) {
-        turn.style.setProperty('--wheel-opacity', '1');
-        turn.style.setProperty('--wheel-angle', '0deg');
-        turn.style.setProperty('--wheel-y', '0px');
-        turn.style.setProperty('--wheel-z', '0px');
-        turn.style.setProperty('--wheel-blur', '0px');
-        turn.style.setProperty('--wheel-brightness', '1');
+        setNeutralWheelStyle(turn);
         return;
       }
 
       const bounds = slot.getBoundingClientRect();
-      const turnCenter = bounds.top + bounds.height / 2;
-      const linearOffset = turnCenter - viewportCenter;
-      const rawPosition = linearOffset / wheelHalfHeight;
-      const normalizedPosition = Math.max(-1, Math.min(1, rawPosition));
-
-      if (Math.abs(rawPosition) > 1) {
-        turn.style.setProperty('--wheel-opacity', '0');
-        turn.style.setProperty('--wheel-angle', '0deg');
-        turn.style.setProperty('--wheel-y', '0px');
-        turn.style.setProperty('--wheel-z', '0px');
-        turn.style.setProperty('--wheel-blur', '0px');
-        turn.style.setProperty('--wheel-brightness', '1');
+      if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) {
+        setHiddenWheelStyle(turn);
         return;
       }
 
-      const absolutePosition = Math.abs(normalizedPosition);
-      const angleRadians = normalizedPosition * maximumAngleRadians;
-      const desiredOffset = Math.sin(angleRadians) * cylinderRadius;
-      const cylinderShift = desiredOffset - linearOffset;
-      const depth = cylinderRadius * (Math.cos(angleRadians) - 1);
-      const edgeProgress = Math.max(0, Math.min(1, (absolutePosition - 0.34) / 0.66));
-      const centerEdgeAmount = Math.pow(edgeProgress, 1.45);
+      const turnCenter = bounds.top + bounds.height / 2;
+      const centerOffset = turnCenter - viewportCenter;
+      const classicPosition = Math.max(
+        -1,
+        Math.min(1, centerOffset / wheelHalfHeight)
+      );
+      const classicAbsolutePosition = Math.abs(classicPosition);
+      const classicEdgeProgress = Math.max(
+        0,
+        Math.min(1, (classicAbsolutePosition - 0.34) / 0.66)
+      );
+      const classicCenterEdgeAmount = Math.pow(classicEdgeProgress, 1.45);
       const distanceFromNearestEdge = Math.max(
         0,
         Math.min(turnCenter - viewport.top, viewport.bottom - turnCenter)
       );
-      const edgeApproach = Math.max(
+      const classicEdgeApproach = Math.max(
         0,
-        Math.min(1, (bounds.height / 2 + edgeFadeZone - distanceFromNearestEdge) / edgeFadeZone)
+        Math.min(
+          1,
+          (bounds.height / 2 + edgeFadeZone - distanceFromNearestEdge) /
+            edgeFadeZone
+        )
       );
-      const edgeAmount = Math.max(centerEdgeAmount, edgeApproach * edgeProgress * 0.82);
+      const classicEdgeAmount = Math.max(
+        classicCenterEdgeAmount,
+        classicEdgeApproach * classicEdgeProgress * 0.82
+      );
 
-      turn.style.setProperty('--wheel-opacity', String(1 - edgeAmount * 0.96));
-      turn.style.setProperty('--wheel-angle', `${normalizedPosition * -maximumAngleDegrees}deg`);
-      turn.style.setProperty('--wheel-y', `${cylinderShift}px`);
-      turn.style.setProperty('--wheel-z', `${depth}px`);
-      turn.style.setProperty('--wheel-blur', `${Math.pow(edgeAmount, 1.55) * 5.5}px`);
-      turn.style.setProperty('--wheel-brightness', String(1 - edgeAmount * 0.14));
+      const dynamicFocusHalfHeight = baseFocusHalfHeight + bounds.height / 2;
+      const distanceBeyondFocus = Math.max(
+        0,
+        Math.abs(centerOffset) - dynamicFocusHalfHeight
+      );
+      const scaledLinearOffset = Math.sign(centerOffset) * distanceBeyondFocus;
+      const scaledPosition = Math.max(
+        -1,
+        Math.min(1, scaledLinearOffset / rollTravel)
+      );
+      const scaledEdgeAmount = Math.pow(Math.abs(scaledPosition), 1.45);
+
+      const shortPillHeight = wheelHalfHeight * 0.55;
+      const longPillHeight = wheelHalfHeight * 0.95;
+      const heightProgress = Math.max(
+        0,
+        Math.min(
+          1,
+          (bounds.height - shortPillHeight) /
+            Math.max(longPillHeight - shortPillHeight, 1)
+        )
+      );
+      const scaledFocusWeight =
+        heightProgress * heightProgress * (3 - 2 * heightProgress);
+      const classicWeight = 1 - scaledFocusWeight;
+      const normalizedPosition =
+        classicPosition * classicWeight + scaledPosition * scaledFocusWeight;
+      const linearOffset =
+        centerOffset * classicWeight + scaledLinearOffset * scaledFocusWeight;
+      const cylinderRadius =
+        classicCylinderRadius * classicWeight +
+        scaledCylinderRadius * scaledFocusWeight;
+      const edgeAmount =
+        classicEdgeAmount * classicWeight +
+        scaledEdgeAmount * scaledFocusWeight;
+
+      applyWheelStyle(
+        turn,
+        normalizedPosition,
+        linearOffset,
+        cylinderRadius,
+        maximumAngleRadians,
+        maximumAngleDegrees,
+        edgeAmount
+      );
     });
   }, []);
 
