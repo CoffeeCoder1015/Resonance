@@ -3,11 +3,29 @@ import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { AvatarCanvas } from './components/AvatarCanvas';
 import { TranscriptLog } from './components/TranscriptLog';
 import { MinimalControlBar } from './components/MinimalControlBar';
-import { DESIGN_VARIANTS } from './types/voice';
+import { DESIGN_VARIANTS, VoicePhase } from './types/voice';
+
+function getStatusDescription(phase: VoicePhase) {
+  switch (phase) {
+    case 'acquiring-microphone':
+      return { text: 'MIC ACCESS', dot: 'bg-[#ffde00]', badge: 'bg-white' };
+    case 'listening':
+      return { text: 'LISTENING', dot: 'bg-[#ff007f]', badge: 'bg-[#ffde00]' };
+    case 'transcribing':
+      return { text: 'TRANSCRIBING', dot: 'bg-[#007bff]', badge: 'bg-[#e9d8fd]' };
+    case 'responding':
+      return { text: 'THINKING', dot: 'bg-[#007bff]', badge: 'bg-[#e9d8fd]' };
+    case 'speaking':
+      return { text: 'SPEAKING', dot: 'bg-[#00e676]', badge: 'bg-[#c6f6d5]' };
+    case 'idle':
+      return { text: 'STANDBY', dot: 'bg-zinc-900', badge: 'bg-white' };
+  }
+}
 
 export function App() {
   const {
     state,
+    phase,
     visualTheme,
     transcript,
     speechOutputEnabled,
@@ -15,6 +33,8 @@ export function App() {
     currentSpeechVolume,
     audioFrequencies,
     toggleListening,
+    beginHoldToTalk,
+    endHoldToTalk,
     submitTextTurn,
     toggleSpeechOutput,
     replayLastResponse,
@@ -34,31 +54,47 @@ export function App() {
       }
       if (e.code === 'Space') {
         e.preventDefault();
-        toggleListening();
+        void beginHoldToTalk();
       } else if (e.key === 'Escape') {
         stopAgentSpeech();
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const target = e.target;
+      if (
+        !(target instanceof HTMLElement) ||
+        !target.closest('input, textarea, button, select, a, [contenteditable="true"]')
+      ) {
+        e.preventDefault();
+      }
+      void endHoldToTalk();
+    };
+
+    const handleWindowBlur = () => {
+      void endHoldToTalk();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        void endHoldToTalk();
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleListening, stopAgentSpeech]);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [beginHoldToTalk, endHoldToTalk, stopAgentSpeech]);
 
-  const getStateDescription = () => {
-    switch (state) {
-      case 'listening':
-        return { text: 'LISTENING', dot: 'bg-[#ff007f]', badge: 'bg-[#ffde00]' };
-      case 'processing':
-        return { text: 'THINKING', dot: 'bg-[#007bff]', badge: 'bg-[#e9d8fd]' };
-      case 'speaking':
-        return { text: 'SPEAKING', dot: 'bg-[#00e676]', badge: 'bg-[#c6f6d5]' };
-      case 'idle':
-      default:
-        return { text: 'STANDBY', dot: 'bg-zinc-900', badge: 'bg-white' };
-    }
-  };
-
-  const statusInfo = getStateDescription();
+  const statusInfo = getStatusDescription(phase);
   const activeVariant = DESIGN_VARIANTS.find(v => v.id === visualTheme) || DESIGN_VARIANTS[0];
 
   return (
@@ -74,13 +110,16 @@ export function App() {
         className="absolute -top-40 left-1/2 -translate-x-1/2 w-[75vw] h-[75vw] rounded-full blur-[90px] opacity-20 pointer-events-none transition-colors duration-700"
       />
 
-      <header className="w-full pt-4 sm:pt-6 px-4 flex justify-center items-center z-20 pointer-events-none shrink-0">
+      <header
+        aria-live="polite"
+        className="w-full pt-4 sm:pt-6 px-4 flex justify-center items-center z-20 pointer-events-none shrink-0"
+      >
         <div
           className={`flex items-center gap-2.5 px-4 py-1.5 rounded-full border-[3px] border-black ${statusInfo.badge} neo-shadow font-mono text-[11px] font-black uppercase tracking-widest text-black`}
         >
           <span
             className={`w-3 h-3 rounded-full border-2 border-black ${statusInfo.dot} ${
-              state !== 'idle' ? 'animate-pulse' : ''
+              phase !== 'idle' ? 'animate-pulse' : ''
             }`}
           />
           <span>{statusInfo.text}</span>
