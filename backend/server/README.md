@@ -29,11 +29,13 @@ run directly through the Vulkan build of `llama-cpp-python`:
 - Gemma runs `unsloth/gemma-4-E2B-it-qat-GGUF` UD-Q4_K_XL.
 - Liquid runs `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` Q4_K_M.
 
-Each provider downloads its GGUF into the Hugging Face cache on first use and
-keeps the loaded model alive for subsequent responses. Gemma uses the selected
-mode directly: agent turns receive an ordinary user message, while transcription
-turns JSON-encode the raw ASR text inside an explicitly marked, untrusted data
-block.
+Each provider downloads its GGUF into the Hugging Face cache and loads it on
+first use. Liquid keeps its model loaded for subsequent responses. Gemma resets
+an idle timer after each response and releases its loaded model after 10 minutes
+without Gemma activity; the next Gemma response loads it again. Gemma uses the
+selected mode directly: agent turns receive an ordinary user message, while
+transcription turns JSON-encode the raw ASR text inside an explicitly marked,
+untrusted data block.
 
 Each text provider implements the same `respond` interface. Turn
 orchestration does not know how a provider constructs commands or parses text.

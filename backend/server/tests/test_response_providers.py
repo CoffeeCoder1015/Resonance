@@ -1,6 +1,6 @@
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from resonance_backend.response_providers import (
     RESPONSE_PROVIDERS,
@@ -259,6 +259,72 @@ class ResponseProviderTests(unittest.TestCase):
             prompt,
         )
         self.assertEqual(prompt.count("\nEND_RAW_TRANSCRIPT_DATA\n"), 1)
+
+    @patch("resonance_backend.response_providers.Timer")
+    @patch("resonance_backend.response_providers.hf_hub_download")
+    @patch("resonance_backend.response_providers.Llama")
+    def test_gemma_unloads_after_ten_minutes_of_inactivity(
+        self,
+        llama,
+        download,
+        timer_class,
+    ) -> None:
+        download.return_value = "gemma.gguf"
+        model = llama.return_value
+        model.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": "Response"}}]
+        }
+        timer = MagicMock()
+        timer_class.return_value = timer
+        provider = GemmaResponseProvider()
+
+        provider.respond("Hello", INSTRUCTIONS)
+
+        timer_class.assert_called_once()
+        self.assertEqual(timer_class.call_args.args[0], 10 * 60)
+        self.assertTrue(timer.daemon)
+        timer.start.assert_called_once_with()
+
+        callback = timer_class.call_args.args[1]
+        generation = timer_class.call_args.kwargs["args"][0]
+        callback(generation)
+
+        model.close.assert_called_once_with()
+        self.assertIsNone(provider._model)
+
+        provider.respond("Again", INSTRUCTIONS)
+
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(llama.call_count, 2)
+
+    @patch("resonance_backend.response_providers.Timer")
+    @patch("resonance_backend.response_providers.hf_hub_download")
+    @patch("resonance_backend.response_providers.Llama")
+    def test_gemma_activity_supersedes_an_expired_idle_timer(
+        self,
+        llama,
+        download,
+        timer_class,
+    ) -> None:
+        download.return_value = "gemma.gguf"
+        model = llama.return_value
+        model.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": "Response"}}]
+        }
+        first_timer = MagicMock()
+        second_timer = MagicMock()
+        timer_class.side_effect = [first_timer, second_timer]
+        provider = GemmaResponseProvider()
+
+        provider.respond("First", INSTRUCTIONS)
+        first_callback = timer_class.call_args_list[0].args[1]
+        first_generation = timer_class.call_args_list[0].kwargs["args"][0]
+        provider.respond("Second", INSTRUCTIONS)
+        first_callback(first_generation)
+
+        first_timer.cancel.assert_called_once_with()
+        model.close.assert_not_called()
+        self.assertIs(provider._model, model)
 
     @patch("resonance_backend.response_providers.subprocess.run")
     def test_nonzero_exit_is_reported(self, run_mock) -> None:

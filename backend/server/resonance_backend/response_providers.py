@@ -1,7 +1,7 @@
 import json
 import shutil
 import subprocess
-from threading import Lock
+from threading import Lock, Timer
 from typing import Protocol
 
 from huggingface_hub import hf_hub_download
@@ -16,6 +16,7 @@ LIQUID_REPO_ID = "LiquidAI/LFM2.5-1.2B-Instruct-GGUF"
 LIQUID_FILENAME = "LFM2.5-1.2B-Instruct-Q4_K_M.gguf"
 GEMMA_REPO_ID = "unsloth/gemma-4-E2B-it-qat-GGUF"
 GEMMA_FILENAME = "gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf"
+GEMMA_IDLE_TIMEOUT_SECONDS = 10 * 60
 
 
 class ResponseProvider(Protocol):
@@ -175,9 +176,15 @@ class GemmaResponseProvider:
     id = "gemma"
     label = "Gemma 4 E2B"
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        idle_timeout_seconds: float = GEMMA_IDLE_TIMEOUT_SECONDS,
+    ) -> None:
         self._model: Llama | None = None
         self._lock = Lock()
+        self._idle_timeout_seconds = idle_timeout_seconds
+        self._idle_timer: Timer | None = None
+        self._idle_generation = 0
 
     def is_available(self) -> bool:
         return True
@@ -196,6 +203,7 @@ class GemmaResponseProvider:
         )
 
         with self._lock:
+            self._cancel_idle_unload()
             if self._model is None:
                 model_path = hf_hub_download(
                     repo_id=GEMMA_REPO_ID,
@@ -210,23 +218,55 @@ class GemmaResponseProvider:
                     verbose=False,
                 )
 
-            result = self._model.create_chat_completion(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": instructions.strip(),
-                    },
-                    {
-                        "role": "user",
-                        "content": user_message,
-                    },
-                ],
-                temperature=0.2,
-                max_tokens=1_024,
-                seed=42,
-            )
+            try:
+                result = self._model.create_chat_completion(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": instructions.strip(),
+                        },
+                        {
+                            "role": "user",
+                            "content": user_message,
+                        },
+                    ],
+                    temperature=0.2,
+                    max_tokens=1_024,
+                    seed=42,
+                )
+            finally:
+                self._schedule_idle_unload()
 
         return _require_response(self, _parse_liquid_response(result))
+
+    def _cancel_idle_unload(self) -> None:
+        self._idle_generation += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+    def _schedule_idle_unload(self) -> None:
+        self._idle_generation += 1
+        generation = self._idle_generation
+        timer = Timer(
+            self._idle_timeout_seconds,
+            self._unload_if_idle,
+            args=(generation,),
+        )
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _unload_if_idle(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._idle_generation:
+                return
+
+            model = self._model
+            self._model = None
+            self._idle_timer = None
+            if model is not None:
+                model.close()
 
 
 RESPONSE_PROVIDERS: dict[str, ResponseProvider] = {
