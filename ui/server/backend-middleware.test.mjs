@@ -91,34 +91,59 @@ test('times out backend work and returns a gateway timeout', async () => {
   assert.deepEqual(await response.json(), { error: 'Backend request timed out.' });
 });
 
-test('routes response provider reads and changes', async () => {
+test('routes agent and transcription provider reads and changes separately', async () => {
   const calls = [];
   const client = {
-    getResponseProviders() {
+    getAgentProviders() {
       return {
         current: 'opencode',
         providers: [{ id: 'opencode', label: 'OpenCode', available: true }]
       };
     },
-    setResponseProvider({ responseProvider }) {
-      calls.push(responseProvider);
-      return { response_provider: responseProvider };
+    setAgentProvider({ provider }) {
+      calls.push(['agent', provider]);
+      return { provider };
+    },
+    getTranscriptionProviders() {
+      return {
+        current: 'passthrough',
+        providers: [{ id: 'passthrough', label: 'Passthrough', available: true }]
+      };
+    },
+    setTranscriptionProvider({ provider }) {
+      calls.push(['transcription', provider]);
+      return { provider };
     }
   };
   const origin = await startServer({ client });
 
-  const listResponse = await fetch(`${origin}/api/response/providers`);
+  const listResponse = await fetch(`${origin}/api/agent/providers`);
   assert.equal(listResponse.status, 200);
   assert.equal((await listResponse.json()).current, 'opencode');
 
-  const changeResponse = await fetch(`${origin}/api/response/providers/current`, {
+  const changeResponse = await fetch(`${origin}/api/agent/providers/current`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ response_provider: 'antigravity' })
+    body: JSON.stringify({ provider: 'antigravity' })
   });
   assert.equal(changeResponse.status, 200);
-  assert.deepEqual(await changeResponse.json(), { response_provider: 'antigravity' });
-  assert.deepEqual(calls, ['antigravity']);
+  assert.deepEqual(await changeResponse.json(), { provider: 'antigravity' });
+
+  const transcriptionResponse = await fetch(`${origin}/api/transcription/providers`);
+  assert.equal((await transcriptionResponse.json()).current, 'passthrough');
+  const changeTranscription = await fetch(
+    `${origin}/api/transcription/providers/current`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'gemma' })
+    }
+  );
+  assert.deepEqual(await changeTranscription.json(), { provider: 'gemma' });
+  assert.deepEqual(calls, [
+    ['agent', 'antigravity'],
+    ['transcription', 'gemma']
+  ]);
 });
 
 test('routes keyboard text turns', async () => {

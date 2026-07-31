@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   getASRProviderSettings,
-  getResponseProviderSettings,
+  getAgentProviderSettings,
+  getTranscriptionProviderSettings,
   selectASRProvider,
-  selectResponseProvider,
+  selectAgentProvider,
+  selectTranscriptionProvider,
   type ASRProviderOption,
   type ResponseProviderOption
 } from '../services/backend';
@@ -27,14 +29,20 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
   useEffect(() => {
     const abortController = new AbortController();
     void Promise.all([
-      getResponseProviderSettings(abortController.signal),
-      getASRProviderSettings(abortController.signal)
+      section === 'agent'
+        ? getAgentProviderSettings(abortController.signal)
+        : getTranscriptionProviderSettings(abortController.signal),
+      section === 'transcription'
+        ? getASRProviderSettings(abortController.signal)
+        : Promise.resolve(null)
     ])
       .then(([responseProviderSettings, asrSettings]) => {
         setResponseProviderOptions(responseProviderSettings.providers);
         setSelectedResponseProvider(responseProviderSettings.current);
-        setASRProviderOptions(asrSettings.providers);
-        setSelectedASRProvider(asrSettings.current);
+        if (asrSettings) {
+          setASRProviderOptions(asrSettings.providers);
+          setSelectedASRProvider(asrSettings.current);
+        }
       })
       .catch(error => {
         if (!abortController.signal.aborted) {
@@ -46,13 +54,17 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
       });
 
     return () => abortController.abort();
-  }, []);
+  }, [section]);
 
   const handleResponseProviderChange = async (responseProvider: string) => {
     setSaving(true);
     setErrorMessage(null);
     try {
-      setSelectedResponseProvider(await selectResponseProvider(responseProvider));
+      setSelectedResponseProvider(
+        await (section === 'agent'
+          ? selectAgentProvider(responseProvider)
+          : selectTranscriptionProvider(responseProvider))
+      );
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Response provider could not be changed.'
@@ -95,13 +107,12 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
         </p>
       </div>
 
-      {section === 'agent' && (
       <div className="rounded-[1.5rem] border-[3px] border-black bg-[#e9d8fd] p-4 neo-shadow sm:p-5">
-        <label htmlFor="response-provider" className="mb-2 block text-sm font-black">
-          Response provider
+        <label htmlFor={`${section}-provider`} className="mb-2 block text-sm font-black">
+          {section === 'agent' ? 'Response provider' : 'Transcription provider'}
         </label>
         <select
-          id="response-provider"
+          id={`${section}-provider`}
           value={selectedResponseProvider}
           disabled={loading || saving || responseProviderOptions.length === 0}
           onChange={event => void handleResponseProviderChange(event.target.value)}
@@ -119,13 +130,16 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
             </option>
           ))}
         </select>
-
+        {section === 'transcription' && (
+          <p className="mt-3 text-xs font-semibold leading-relaxed text-black/55">
+            Refines recognized speech before it is inserted. Passthrough keeps the ASR text unchanged.
+          </p>
+        )}
       </div>
-      )}
 
       {section === 'transcription' && (
       <>
-      <div className="rounded-[1.5rem] border-[3px] border-black bg-[#fff2a8] p-4 neo-shadow sm:p-5">
+      <div className="mt-4 rounded-[1.5rem] border-[3px] border-black bg-[#fff2a8] p-4 neo-shadow sm:p-5">
         <label htmlFor="asr-provider" className="mb-2 block text-sm font-black">
           Speech recognition
         </label>

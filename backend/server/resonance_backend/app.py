@@ -12,6 +12,10 @@ from resonance_backend.asr_providers import (
     list_asr_providers,
 )
 from resonance_backend.modes import MODES, get_mode
+from resonance_backend.provider_ids import (
+    AGENT_PROVIDER_IDS,
+    TRANSCRIPTION_PROVIDER_IDS,
+)
 from resonance_backend.response_providers import (
     RESPONSE_PROVIDERS,
     get_response_provider,
@@ -20,10 +24,12 @@ from resonance_backend.response_providers import (
 )
 from resonance_backend.settings import (
     load_asr_provider,
-    load_response_provider,
+    load_agent_provider,
     load_settings,
+    load_transcription_provider,
     save_asr_provider,
-    save_response_provider,
+    save_agent_provider,
+    save_transcription_provider,
 )
 
 
@@ -44,7 +50,7 @@ turns: dict[str, dict[str, str]] = {}
 
 
 class ResponseProviderSelection(BaseModel):
-    response_provider: str
+    provider: str
 
 
 class ASRProviderSelection(BaseModel):
@@ -104,6 +110,14 @@ def create_turn(
             status_code=422,
             detail="The requested pipeline mode is not supported.",
         )
+    allowed_provider_ids = (
+        AGENT_PROVIDER_IDS if mode_id == "agent" else TRANSCRIPTION_PROVIDER_IDS
+    )
+    if response_provider not in allowed_provider_ids:
+        raise HTTPException(
+            status_code=500,
+            detail=f"The saved {mode_id} provider is not valid for this pipeline.",
+        )
 
     turn_id = f"turn_{uuid4().hex}"
     turn = {
@@ -160,7 +174,7 @@ def create_voice_turn(
     mode: Literal["agent", "transcription"],
 ) -> dict[str, str]:
     settings = load_settings()
-    response_provider = settings["response_provider"]
+    response_provider = settings[f"{mode}_provider"]
     transcript = transcribe(file)
     turn = create_turn(
         transcript,
@@ -183,7 +197,7 @@ def create_text_turn(
     turn = create_turn(
         request.text.strip(),
         background_tasks,
-        settings["response_provider"],
+        settings[f"{request.mode}_provider"],
         request.mode,
     )
     response.headers["Location"] = f"/v1/turns/{turn['id']}"
@@ -199,28 +213,52 @@ def get_turn(turn_id: str) -> dict[str, str]:
     return turn
 
 
-@app.get("/v1/response/providers")
-def get_response_providers() -> dict[str, object]:
+@app.get("/v1/agent/providers")
+def get_agent_providers() -> dict[str, object]:
     return {
-        "current": load_response_provider(),
-        "providers": list_response_providers(),
+        "current": load_agent_provider(),
+        "providers": list_response_providers(AGENT_PROVIDER_IDS),
     }
 
 
-@app.put("/v1/response/providers/current")
-def set_response_provider(
+@app.put("/v1/agent/providers/current")
+def set_agent_provider(
     selection: ResponseProviderSelection,
 ) -> dict[str, str]:
-    if selection.response_provider not in RESPONSE_PROVIDERS:
-        raise HTTPException(status_code=422, detail="Unknown response provider.")
-    if not is_response_provider_available(selection.response_provider):
+    if selection.provider not in AGENT_PROVIDER_IDS:
+        raise HTTPException(status_code=422, detail="Unknown agent provider.")
+    if not is_response_provider_available(selection.provider):
         raise HTTPException(
             status_code=409,
-            detail=f"{selection.response_provider} is unavailable.",
+            detail=f"{selection.provider} is unavailable.",
         )
 
-    save_response_provider(selection.response_provider)
-    return {"response_provider": selection.response_provider}
+    save_agent_provider(selection.provider)
+    return {"provider": selection.provider}
+
+
+@app.get("/v1/transcription/providers")
+def get_transcription_providers() -> dict[str, object]:
+    return {
+        "current": load_transcription_provider(),
+        "providers": list_response_providers(TRANSCRIPTION_PROVIDER_IDS),
+    }
+
+
+@app.put("/v1/transcription/providers/current")
+def set_transcription_provider(
+    selection: ResponseProviderSelection,
+) -> dict[str, str]:
+    if selection.provider not in TRANSCRIPTION_PROVIDER_IDS:
+        raise HTTPException(status_code=422, detail="Unknown transcription provider.")
+    if not is_response_provider_available(selection.provider):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{selection.provider} is unavailable.",
+        )
+
+    save_transcription_provider(selection.provider)
+    return {"provider": selection.provider}
 
 
 @app.get("/v1/asr/providers")

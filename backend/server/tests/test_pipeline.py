@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from fastapi import BackgroundTasks, Response
+from fastapi import BackgroundTasks, HTTPException, Response
 
 from resonance_backend import app as app_module
 
@@ -12,7 +12,8 @@ class PipelineTests(unittest.TestCase):
         app_module,
         "load_settings",
         return_value={
-            "response_provider": "passthrough",
+            "agent_provider": "opencode",
+            "transcription_provider": "passthrough",
             "asr_provider": "whisper",
         },
     )
@@ -76,7 +77,7 @@ class PipelineTests(unittest.TestCase):
         agent = app_module.create_turn(
             "Question",
             background_tasks,
-            "passthrough",
+            "opencode",
             "agent",
         )
 
@@ -85,15 +86,27 @@ class PipelineTests(unittest.TestCase):
         del app_module.turns[transcription["id"]]
         del app_module.turns[agent["id"]]
 
+    def test_provider_cannot_cross_pipeline_boundary(self) -> None:
+        with self.assertRaises(HTTPException) as context:
+            app_module.create_turn(
+                "Question",
+                BackgroundTasks(),
+                "gemma",
+                "agent",
+            )
+
+        self.assertEqual(context.exception.status_code, 500)
+
     @patch.object(
         app_module,
         "load_settings",
         return_value={
-            "response_provider": "passthrough",
+            "agent_provider": "antigravity",
+            "transcription_provider": "passthrough",
             "asr_provider": "whisper",
         },
     )
-    def test_text_turn_uses_the_response_provider(
+    def test_text_turn_uses_the_provider_for_its_mode(
         self,
         load_settings: Mock,
     ) -> None:
@@ -104,7 +117,7 @@ class PipelineTests(unittest.TestCase):
         turn = app_module.create_text_turn(request, background_tasks, response)
 
         self.assertEqual(turn["transcript"], "Typed text")
-        self.assertEqual(turn["response_provider"], "passthrough")
+        self.assertEqual(turn["response_provider"], "antigravity")
         self.assertEqual(turn["mode"], "agent")
         self.assertEqual(len(background_tasks.tasks), 1)
         self.assertIs(background_tasks.tasks[0].func, app_module.run_response_stage)

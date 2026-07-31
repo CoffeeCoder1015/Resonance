@@ -16,7 +16,7 @@ export interface ResponseProviderOption {
   available: boolean;
 }
 
-export interface ResponseProviderSettings {
+export interface ProviderSettings {
   current: string;
   providers: ResponseProviderOption[];
 }
@@ -119,22 +119,40 @@ export async function waitForTurn(turnId: string, signal?: AbortSignal): Promise
   }
 }
 
-export function getResponseProviderSettings(
+export function getAgentProviderSettings(
   signal?: AbortSignal
-): Promise<ResponseProviderSettings> {
-  return requestJson<ResponseProviderSettings>('/api/response/providers', { signal });
+): Promise<ProviderSettings> {
+  return requestJson<ProviderSettings>('/api/agent/providers', { signal });
 }
 
-export async function selectResponseProvider(responseProvider: string): Promise<string> {
-  const result = await requestJson<{ response_provider: string }>(
-    '/api/response/providers/current',
+export async function selectAgentProvider(provider: string): Promise<string> {
+  const result = await requestJson<{ provider: string }>(
+    '/api/agent/providers/current',
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response_provider: responseProvider })
+      body: JSON.stringify({ provider })
     }
   );
-  return result.response_provider;
+  return result.provider;
+}
+
+export function getTranscriptionProviderSettings(
+  signal?: AbortSignal
+): Promise<ProviderSettings> {
+  return requestJson<ProviderSettings>('/api/transcription/providers', { signal });
+}
+
+export async function selectTranscriptionProvider(provider: string): Promise<string> {
+  const result = await requestJson<{ provider: string }>(
+    '/api/transcription/providers/current',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider })
+    }
+  );
+  return result.provider;
 }
 
 export function getASRProviderSettings(signal?: AbortSignal): Promise<ASRProviderSettings> {

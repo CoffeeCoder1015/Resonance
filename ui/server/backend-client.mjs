@@ -54,15 +54,28 @@ export function createBackendClient({
       return request(`/v1/turns/${encodeURIComponent(turnId)}`, { signal });
     },
 
-    getResponseProviders({ signal }) {
-      return request('/v1/response/providers', { signal });
+    getAgentProviders({ signal }) {
+      return request('/v1/agent/providers', { signal });
     },
 
-    setResponseProvider({ responseProvider, signal }) {
-      return request('/v1/response/providers/current', {
+    setAgentProvider({ provider, signal }) {
+      return request('/v1/agent/providers/current', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response_provider: responseProvider }),
+        body: JSON.stringify({ provider }),
+        signal
+      });
+    },
+
+    getTranscriptionProviders({ signal }) {
+      return request('/v1/transcription/providers', { signal });
+    },
+
+    setTranscriptionProvider({ provider, signal }) {
+      return request('/v1/transcription/providers/current', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
         signal
       });
     },

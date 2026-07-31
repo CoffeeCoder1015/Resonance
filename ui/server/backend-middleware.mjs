@@ -2,8 +2,10 @@ import { createBackendClient } from './backend-client.mjs';
 
 const VOICE_TURNS_ROUTE = '/api/voice/turns';
 const TEXT_TURNS_ROUTE = '/api/text/turns';
-const RESPONSE_PROVIDERS_ROUTE = '/api/response/providers';
-const CURRENT_RESPONSE_PROVIDER_ROUTE = '/api/response/providers/current';
+const AGENT_PROVIDERS_ROUTE = '/api/agent/providers';
+const CURRENT_AGENT_PROVIDER_ROUTE = '/api/agent/providers/current';
+const TRANSCRIPTION_PROVIDERS_ROUTE = '/api/transcription/providers';
+const CURRENT_TRANSCRIPTION_PROVIDER_ROUTE = '/api/transcription/providers/current';
 const ASR_PROVIDERS_ROUTE = '/api/asr/providers';
 const CURRENT_ASR_PROVIDER_ROUTE = '/api/asr/providers/current';
 const TURN_ROUTE = /^\/api\/turns\/([^/]+)$/;
@@ -79,11 +81,17 @@ function routeRequest(pathname, method) {
   if (pathname === TEXT_TURNS_ROUTE) {
     return method === 'POST' ? 'createTextTurn' : 'methodNotAllowed';
   }
-  if (pathname === RESPONSE_PROVIDERS_ROUTE) {
-    return method === 'GET' ? 'getResponseProviders' : 'methodNotAllowed';
+  if (pathname === AGENT_PROVIDERS_ROUTE) {
+    return method === 'GET' ? 'getAgentProviders' : 'methodNotAllowed';
   }
-  if (pathname === CURRENT_RESPONSE_PROVIDER_ROUTE) {
-    return method === 'PUT' ? 'setResponseProvider' : 'methodNotAllowed';
+  if (pathname === CURRENT_AGENT_PROVIDER_ROUTE) {
+    return method === 'PUT' ? 'setAgentProvider' : 'methodNotAllowed';
+  }
+  if (pathname === TRANSCRIPTION_PROVIDERS_ROUTE) {
+    return method === 'GET' ? 'getTranscriptionProviders' : 'methodNotAllowed';
+  }
+  if (pathname === CURRENT_TRANSCRIPTION_PROVIDER_ROUTE) {
+    return method === 'PUT' ? 'setTranscriptionProvider' : 'methodNotAllowed';
   }
   if (pathname === ASR_PROVIDERS_ROUTE) {
     return method === 'GET' ? 'getASRProviders' : 'methodNotAllowed';
@@ -157,12 +165,20 @@ export function createBackendMiddleware({
           mode: body.mode,
           signal: abortController.signal
         });
-      } else if (route === 'getResponseProviders') {
-        result = await client.getResponseProviders({ signal: abortController.signal });
-      } else if (route === 'setResponseProvider') {
+      } else if (route === 'getAgentProviders') {
+        result = await client.getAgentProviders({ signal: abortController.signal });
+      } else if (route === 'setAgentProvider') {
         const body = await readJson(request);
-        result = await client.setResponseProvider({
-          responseProvider: body.response_provider,
+        result = await client.setAgentProvider({
+          provider: body.provider,
+          signal: abortController.signal
+        });
+      } else if (route === 'getTranscriptionProviders') {
+        result = await client.getTranscriptionProviders({ signal: abortController.signal });
+      } else if (route === 'setTranscriptionProvider') {
+        const body = await readJson(request);
+        result = await client.setTranscriptionProvider({
+          provider: body.provider,
           signal: abortController.signal
         });
       } else if (route === 'getASRProviders') {
