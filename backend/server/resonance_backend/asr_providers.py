@@ -5,7 +5,7 @@ from resonance_backend.asr import ASRProvider, AudioInput, WhisperASR
 
 ASR_PROVIDERS: dict[str, ASRProvider] = {
     provider.id: provider
-    for provider in (WhisperASR(model="openai/whisper-small.en"),)
+    for provider in (WhisperASR(model="openai/whisper-base.en"),)
 }
 
 
