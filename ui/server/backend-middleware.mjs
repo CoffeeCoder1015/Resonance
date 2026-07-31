@@ -2,12 +2,17 @@ import { createBackendClient } from './backend-client.mjs';
 
 const VOICE_TURNS_ROUTE = '/api/voice/turns';
 const TEXT_TURNS_ROUTE = '/api/text/turns';
-const PROVIDERS_ROUTE = '/api/providers';
-const CURRENT_PROVIDER_ROUTE = '/api/providers/current';
+const RESPONSE_PROVIDERS_ROUTE = '/api/response/providers';
+const CURRENT_RESPONSE_PROVIDER_ROUTE = '/api/response/providers/current';
+const ASR_PROVIDERS_ROUTE = '/api/asr/providers';
+const CURRENT_ASR_PROVIDER_ROUTE = '/api/asr/providers/current';
+const MODES_ROUTE = '/api/modes';
+const CURRENT_MODE_ROUTE = '/api/modes/current';
 const TURN_ROUTE = /^\/api\/turns\/([^/]+)$/;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
 const DEFAULT_BACKEND_TIMEOUT_MS = 120_000;
+const ASR_PROVIDER_SWITCH_TIMEOUT_MS = 10 * 60_000;
 
 function createHttpError(message, statusCode) {
   const error = new Error(message);
@@ -76,11 +81,23 @@ function routeRequest(pathname, method) {
   if (pathname === TEXT_TURNS_ROUTE) {
     return method === 'POST' ? 'createTextTurn' : 'methodNotAllowed';
   }
-  if (pathname === PROVIDERS_ROUTE) {
-    return method === 'GET' ? 'getProviders' : 'methodNotAllowed';
+  if (pathname === RESPONSE_PROVIDERS_ROUTE) {
+    return method === 'GET' ? 'getResponseProviders' : 'methodNotAllowed';
   }
-  if (pathname === CURRENT_PROVIDER_ROUTE) {
-    return method === 'PUT' ? 'setProvider' : 'methodNotAllowed';
+  if (pathname === CURRENT_RESPONSE_PROVIDER_ROUTE) {
+    return method === 'PUT' ? 'setResponseProvider' : 'methodNotAllowed';
+  }
+  if (pathname === ASR_PROVIDERS_ROUTE) {
+    return method === 'GET' ? 'getASRProviders' : 'methodNotAllowed';
+  }
+  if (pathname === CURRENT_ASR_PROVIDER_ROUTE) {
+    return method === 'PUT' ? 'setASRProvider' : 'methodNotAllowed';
+  }
+  if (pathname === MODES_ROUTE) {
+    return method === 'GET' ? 'getModes' : 'methodNotAllowed';
+  }
+  if (pathname === CURRENT_MODE_ROUTE) {
+    return method === 'PUT' ? 'setMode' : 'methodNotAllowed';
   }
 
   const turnMatch = pathname.match(TURN_ROUTE);
@@ -113,9 +130,13 @@ export function createBackendMiddleware({
         abortController.abort(createHttpError('Client disconnected.', 499));
       }
     };
+    const requestTimeoutMs =
+      route === 'setASRProvider'
+        ? Math.max(timeoutMs, ASR_PROVIDER_SWITCH_TIMEOUT_MS)
+        : timeoutMs;
     const timeoutId = setTimeout(() => {
       abortController.abort(createHttpError('Backend request timed out.', 504));
-    }, timeoutMs);
+    }, requestTimeoutMs);
     request.once('aborted', abortForDisconnect);
     response.once('close', abortForDisconnect);
 
@@ -138,12 +159,28 @@ export function createBackendMiddleware({
           text: body.text,
           signal: abortController.signal
         });
-      } else if (route === 'getProviders') {
-        result = await client.getProviders({ signal: abortController.signal });
-      } else if (route === 'setProvider') {
+      } else if (route === 'getResponseProviders') {
+        result = await client.getResponseProviders({ signal: abortController.signal });
+      } else if (route === 'setResponseProvider') {
         const body = await readJson(request);
-        result = await client.setProvider({
+        result = await client.setResponseProvider({
+          responseProvider: body.response_provider,
+          signal: abortController.signal
+        });
+      } else if (route === 'getASRProviders') {
+        result = await client.getASRProviders({ signal: abortController.signal });
+      } else if (route === 'setASRProvider') {
+        const body = await readJson(request);
+        result = await client.setASRProvider({
           provider: body.provider,
+          signal: abortController.signal
+        });
+      } else if (route === 'getModes') {
+        result = await client.getModes({ signal: abortController.signal });
+      } else if (route === 'setMode') {
+        const body = await readJson(request);
+        result = await client.setMode({
+          mode: body.mode,
           signal: abortController.signal
         });
       } else {
@@ -158,7 +195,11 @@ export function createBackendMiddleware({
           response.setHeader('Location', `/api/turns/${result.id}`);
           response.setHeader('Retry-After', '1');
         }
-        sendJson(response, route === 'createVoiceTurn' || route === 'createTextTurn' ? 202 : 200, result);
+        sendJson(
+          response,
+          route === 'createVoiceTurn' || route === 'createTextTurn' ? 202 : 200,
+          result
+        );
       }
     } catch (error) {
       if (response.destroyed || response.writableEnded) return;

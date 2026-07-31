@@ -242,7 +242,7 @@ export const TranscriptLog: React.FC<TranscriptLogProps> = ({
                         : 'bg-[#111111] text-white font-bold'
                     }`}
                   >
-                    <p className={`leading-snug tracking-tight ${isLatest ? 'text-base sm:text-xl' : 'text-sm sm:text-base'}`}>
+                    <p className={`whitespace-pre-wrap leading-snug tracking-tight ${isLatest ? 'text-base sm:text-xl' : 'text-sm sm:text-base'}`}>
                       {turn.text}
                       {turn.isStreaming && <Caret />}
                     </p>

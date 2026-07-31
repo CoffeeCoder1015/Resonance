@@ -49,7 +49,9 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
 }) => {
   const [showTextInput, setShowTextInput] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<'avatar' | 'provider'>('avatar');
+  const [settingsSection, setSettingsSection] = useState<
+    'avatar' | 'transcription' | 'agent'
+  >('avatar');
   const [inputText, setInputText] = useState('');
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -160,19 +162,38 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
                     <ChevronRight className="h-4 w-4 shrink-0 stroke-[3]" />
                   </button>
                   <button
-                    id="provider-settings-tab"
+                    id="transcription-settings-tab"
                     type="button"
                     role="tab"
-                    aria-selected={settingsSection === 'provider'}
+                    aria-selected={settingsSection === 'transcription'}
                     aria-controls="provider-settings-panel"
-                    onClick={() => setSettingsSection('provider')}
+                    onClick={() => setSettingsSection('transcription')}
                     className={`mt-3 flex w-full items-center gap-2 rounded-xl border-[3px] border-black px-2.5 py-3 text-left neo-press ${
-                      settingsSection === 'provider' ? 'bg-[#ffde00] neo-shadow' : 'bg-white'
+                      settingsSection === 'transcription'
+                        ? 'bg-[#ffde00] neo-shadow'
+                        : 'bg-white'
+                    }`}
+                  >
+                    <Mic className="h-4 w-4 shrink-0 stroke-[2.5]" />
+                    <span className="min-w-0 flex-1 truncate text-xs font-black sm:text-sm">
+                      Transcription
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 stroke-[3]" />
+                  </button>
+                  <button
+                    id="agent-settings-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsSection === 'agent'}
+                    aria-controls="provider-settings-panel"
+                    onClick={() => setSettingsSection('agent')}
+                    className={`mt-3 flex w-full items-center gap-2 rounded-xl border-[3px] border-black px-2.5 py-3 text-left neo-press ${
+                      settingsSection === 'agent' ? 'bg-[#ffde00] neo-shadow' : 'bg-white'
                     }`}
                   >
                     <Bot className="h-4 w-4 shrink-0 stroke-[2.5]" />
                     <span className="min-w-0 flex-1 truncate text-xs font-black sm:text-sm">
-                      Provider
+                      Agent
                     </span>
                     <ChevronRight className="h-4 w-4 shrink-0 stroke-[3]" />
                   </button>
@@ -267,7 +288,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
                   </div>
                 </div>
               ) : (
-                <ProviderSettingsPanel />
+                <ProviderSettingsPanel section={settingsSection} />
               )}
             </div>
           </section>

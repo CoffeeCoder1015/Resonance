@@ -4,20 +4,41 @@ export interface Turn {
   id: string;
   status: TurnStatus;
   transcript: string;
-  provider: string;
+  response_provider: string;
+  mode: string;
   response?: string;
   error?: string;
 }
 
-export interface ProviderOption {
+export interface ResponseProviderOption {
   id: string;
   label: string;
   available: boolean;
 }
 
-export interface ProviderSettings {
+export interface ResponseProviderSettings {
   current: string;
-  providers: ProviderOption[];
+  providers: ResponseProviderOption[];
+}
+
+export interface ASRProviderOption {
+  id: string;
+  label: string;
+}
+
+export interface ASRProviderSettings {
+  current: string;
+  providers: ASRProviderOption[];
+}
+
+export interface ModeOption {
+  id: string;
+  label: string;
+}
+
+export interface ModeSettings {
+  current: string;
+  modes: ModeOption[];
 }
 
 const TURN_POLL_INTERVAL_MS = 750;
@@ -88,25 +109,56 @@ export async function waitForTurn(turnId: string, signal?: AbortSignal): Promise
     });
 
     if (turn.status === 'completed') {
-      if (!turn.response) throw new Error('Agent returned an empty response.');
+      if (!turn.response) throw new Error('Response provider returned empty text.');
       return turn;
     }
     if (turn.status === 'failed') {
-      throw new Error(turn.error || 'Agent response failed.');
+      throw new Error(turn.error || 'Response processing failed.');
     }
     await delay(TURN_POLL_INTERVAL_MS, signal);
   }
 }
 
-export function getProviderSettings(signal?: AbortSignal): Promise<ProviderSettings> {
-  return requestJson<ProviderSettings>('/api/providers', { signal });
+export function getResponseProviderSettings(
+  signal?: AbortSignal
+): Promise<ResponseProviderSettings> {
+  return requestJson<ResponseProviderSettings>('/api/response/providers', { signal });
 }
 
-export async function selectProvider(provider: string): Promise<string> {
-  const result = await requestJson<{ provider: string }>('/api/providers/current', {
+export async function selectResponseProvider(responseProvider: string): Promise<string> {
+  const result = await requestJson<{ response_provider: string }>(
+    '/api/response/providers/current',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response_provider: responseProvider })
+    }
+  );
+  return result.response_provider;
+}
+
+export function getASRProviderSettings(signal?: AbortSignal): Promise<ASRProviderSettings> {
+  return requestJson<ASRProviderSettings>('/api/asr/providers', { signal });
+}
+
+export async function selectASRProvider(provider: string): Promise<string> {
+  const result = await requestJson<{ provider: string }>('/api/asr/providers/current', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ provider })
   });
   return result.provider;
+}
+
+export function getModeSettings(signal?: AbortSignal): Promise<ModeSettings> {
+  return requestJson<ModeSettings>('/api/modes', { signal });
+}
+
+export async function selectMode(mode: string): Promise<string> {
+  const result = await requestJson<{ mode: string }>('/api/modes/current', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode })
+  });
+  return result.mode;
 }

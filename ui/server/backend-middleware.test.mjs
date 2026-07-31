@@ -91,34 +91,127 @@ test('times out backend work and returns a gateway timeout', async () => {
   assert.deepEqual(await response.json(), { error: 'Backend request timed out.' });
 });
 
-test('routes provider reads and changes', async () => {
+test('routes response provider reads and changes', async () => {
   const calls = [];
   const client = {
-    getProviders() {
+    getResponseProviders() {
       return {
         current: 'opencode',
         providers: [{ id: 'opencode', label: 'OpenCode', available: true }]
       };
     },
-    setProvider({ provider }) {
+    setResponseProvider({ responseProvider }) {
+      calls.push(responseProvider);
+      return { response_provider: responseProvider };
+    }
+  };
+  const origin = await startServer({ client });
+
+  const listResponse = await fetch(`${origin}/api/response/providers`);
+  assert.equal(listResponse.status, 200);
+  assert.equal((await listResponse.json()).current, 'opencode');
+
+  const changeResponse = await fetch(`${origin}/api/response/providers/current`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ response_provider: 'antigravity' })
+  });
+  assert.equal(changeResponse.status, 200);
+  assert.deepEqual(await changeResponse.json(), { response_provider: 'antigravity' });
+  assert.deepEqual(calls, ['antigravity']);
+});
+
+test('routes keyboard text turns', async () => {
+  const calls = [];
+  const client = {
+    createTextTurn({ text }) {
+      calls.push(text);
+      return {
+        id: 'turn_text',
+        status: 'responding',
+        transcript: text,
+        response_provider: 'opencode',
+        mode: 'voice'
+      };
+    }
+  };
+  const origin = await startServer({ client });
+
+  const response = await fetch(`${origin}/api/text/turns`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'Hello' })
+  });
+
+  assert.equal(response.status, 202);
+  assert.equal(response.headers.get('location'), '/api/turns/turn_text');
+  assert.deepEqual(calls, ['Hello']);
+});
+
+test('routes ASR provider reads and changes', async () => {
+  const calls = [];
+  const client = {
+    getASRProviders() {
+      return {
+        current: 'whisper',
+        providers: [
+          { id: 'whisper', label: 'Whisper' },
+          { id: 'whisper', label: 'Whisper' }
+        ]
+      };
+    },
+    setASRProvider({ provider }) {
       calls.push(provider);
       return { provider };
     }
   };
   const origin = await startServer({ client });
 
-  const listResponse = await fetch(`${origin}/api/providers`);
+  const listResponse = await fetch(`${origin}/api/asr/providers`);
   assert.equal(listResponse.status, 200);
-  assert.equal((await listResponse.json()).current, 'opencode');
+  assert.equal((await listResponse.json()).current, 'whisper');
 
-  const changeResponse = await fetch(`${origin}/api/providers/current`, {
+  const changeResponse = await fetch(`${origin}/api/asr/providers/current`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: 'antigravity' })
+    body: JSON.stringify({ provider: 'whisper' })
   });
   assert.equal(changeResponse.status, 200);
-  assert.deepEqual(await changeResponse.json(), { provider: 'antigravity' });
-  assert.deepEqual(calls, ['antigravity']);
+  assert.deepEqual(await changeResponse.json(), { provider: 'whisper' });
+  assert.deepEqual(calls, ['whisper']);
+});
+
+test('routes mode reads and changes', async () => {
+  const calls = [];
+  const client = {
+    getModes() {
+      return {
+        current: 'voice',
+        modes: [
+          { id: 'voice', label: 'Voice' },
+          { id: 'transcription', label: 'Transcription' }
+        ]
+      };
+    },
+    setMode({ mode }) {
+      calls.push(mode);
+      return { mode };
+    }
+  };
+  const origin = await startServer({ client });
+
+  const listResponse = await fetch(`${origin}/api/modes`);
+  assert.equal(listResponse.status, 200);
+  assert.equal((await listResponse.json()).current, 'voice');
+
+  const changeResponse = await fetch(`${origin}/api/modes/current`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'transcription' })
+  });
+  assert.equal(changeResponse.status, 200);
+  assert.deepEqual(await changeResponse.json(), { mode: 'transcription' });
+  assert.deepEqual(calls, ['transcription']);
 });
 
 test('returns an addressable voice turn', async () => {
@@ -128,7 +221,7 @@ test('returns an addressable voice turn', async () => {
         id: 'turn_123',
         status: 'responding',
         transcript: 'Hello',
-        provider: 'opencode'
+        response_provider: 'opencode'
       };
     }
   };

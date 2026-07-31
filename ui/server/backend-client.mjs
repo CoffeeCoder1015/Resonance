@@ -54,15 +54,41 @@ export function createBackendClient({
       return request(`/v1/turns/${encodeURIComponent(turnId)}`, { signal });
     },
 
-    getProviders({ signal }) {
-      return request('/v1/providers', { signal });
+    getResponseProviders({ signal }) {
+      return request('/v1/response/providers', { signal });
     },
 
-    setProvider({ provider, signal }) {
-      return request('/v1/providers/current', {
+    setResponseProvider({ responseProvider, signal }) {
+      return request('/v1/response/providers/current', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ response_provider: responseProvider }),
+        signal
+      });
+    },
+
+    getASRProviders({ signal }) {
+      return request('/v1/asr/providers', { signal });
+    },
+
+    setASRProvider({ provider, signal }) {
+      return request('/v1/asr/providers/current', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider }),
+        signal
+      });
+    },
+
+    getModes({ signal }) {
+      return request('/v1/modes', { signal });
+    },
+
+    setMode({ mode, signal }) {
+      return request('/v1/modes/current', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
         signal
       });
     }

@@ -3,9 +3,11 @@ name = "resonance-backend"
 version = "0.1.0"
 description = "Managed local application backend for Resonance"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.140.0",
+    "huggingface-hub==1.25.1",
+    "llama-cpp-python==0.3.34",
     "python-multipart==0.0.20",
     "soundfile==0.14.0",
     "torch==2.13.0",
@@ -15,3 +17,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+name = "llama-cpp-python-vulkan"
+url = "https://abetlen.github.io/llama-cpp-python/whl/vulkan"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llama-cpp-python-vulkan" }

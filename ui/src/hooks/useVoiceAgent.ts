@@ -485,7 +485,7 @@ export function useVoiceAgent() {
         } catch (error) {
           if (generation !== turnGenerationRef.current) return;
           console.error('Text turn failed.', error);
-          appendTurn('agent', getErrorMessage(error, 'Agent response failed.'));
+          appendTurn('agent', getErrorMessage(error, 'Response failed.'));
           settleTurn(generation);
         } finally {
           if (turnAbortRef.current === abortController) {
