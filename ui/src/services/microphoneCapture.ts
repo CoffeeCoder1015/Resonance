@@ -116,11 +116,15 @@ export class MicrophoneCapture {
 
   async start({ mode, onUtterance, onMaxDuration }: StartCaptureOptions) {
     this.assertActive();
+    if (!this.stream.getAudioTracks().some(track => track.readyState === 'live')) {
+      throw new Error('The microphone stream is no longer available.');
+    }
     this.mode = mode;
     this.onUtterance = onUtterance;
     this.finishing = false;
     this.readyNotified = false;
 
+    this.setStreamEnabled(true);
     if (this.context.state === 'suspended') await this.context.resume();
     if (!this.vad.listening) await this.vad.start();
     this.assertActive();
@@ -140,6 +144,7 @@ export class MicrophoneCapture {
       if (this.vad.listening) await this.vad.pause();
       return this.segments.drainWav();
     } finally {
+      this.setStreamEnabled(false);
       this.finishing = false;
     }
   }
@@ -152,6 +157,7 @@ export class MicrophoneCapture {
       if (this.vad.listening) await this.vad.pause();
       this.segments.clear();
     } finally {
+      this.setStreamEnabled(false);
       this.finishing = false;
     }
   }
@@ -161,6 +167,7 @@ export class MicrophoneCapture {
     this.segments.clear();
     this.readyNotified = false;
     this.finishing = false;
+    this.setStreamEnabled(true);
     if (this.context.state === 'suspended') await this.context.resume();
     if (!this.vad.listening) await this.vad.start();
   }
@@ -195,6 +202,12 @@ export class MicrophoneCapture {
       clearTimeout(this.maxDurationTimer);
       this.maxDurationTimer = null;
     }
+  }
+
+  private setStreamEnabled(enabled: boolean) {
+    this.stream.getAudioTracks().forEach(track => {
+      track.enabled = enabled;
+    });
   }
 
   private assertActive() {

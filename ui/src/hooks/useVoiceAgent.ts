@@ -72,6 +72,8 @@ export function useVoiceAgent() {
   const turnGenerationRef = useRef(0);
   const captureStartupRef = useRef<Promise<void> | null>(null);
   const captureStartupAbortRef = useRef<AbortController | null>(null);
+  const captureOpenRef = useRef<Promise<MicrophoneCapture> | null>(null);
+  const captureOpenAbortRef = useRef<AbortController | null>(null);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const finishingCaptureRef = useRef<MicrophoneCapture | null>(null);
   const turnAbortRef = useRef<AbortController | null>(null);
@@ -92,6 +94,35 @@ export function useVoiceAgent() {
   const setAgentMode = useCallback((enabled: boolean) => {
     agentModeEnabledRef.current = enabled;
     setAgentModeEnabled(enabled);
+  }, []);
+
+  const ensureCapture = useCallback(async () => {
+    if (captureRef.current) return captureRef.current;
+    if (captureOpenRef.current) return captureOpenRef.current;
+
+    const abortController = new AbortController();
+    captureOpenAbortRef.current = abortController;
+    const opening = MicrophoneCapture.open(abortController.signal).then(
+      async capture => {
+        await capture.discardAndPause();
+        if (abortController.signal.aborted) {
+          await capture.dispose();
+          throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
+        }
+        captureRef.current = capture;
+        return capture;
+      }
+    );
+    captureOpenRef.current = opening;
+
+    try {
+      return await opening;
+    } finally {
+      if (captureOpenRef.current === opening) captureOpenRef.current = null;
+      if (captureOpenAbortRef.current === abortController) {
+        captureOpenAbortRef.current = null;
+      }
+    }
   }, []);
 
   const state = toAgentState(phase);
@@ -143,13 +174,10 @@ export function useVoiceAgent() {
       capture !== null;
 
     if (capture) {
-      if (preserveAgentCapture) {
-        await capture.discardAndPause();
-      } else {
-        captureRef.current = null;
+      await capture.discardAndPause();
+      if (!preserveAgentCapture) {
         activeInputModeRef.current = null;
         activePipelineModeRef.current = null;
-        await capture.dispose();
       }
     } else if (!agentModeEnabledRef.current) {
       activeInputModeRef.current = null;
@@ -328,10 +356,8 @@ export function useVoiceAgent() {
         if (generation !== turnGenerationRef.current) return;
 
         if (mode !== 'agent') {
-          if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
           activePipelineModeRef.current = null;
-          await capture.dispose();
         }
 
         if (generation !== turnGenerationRef.current) return;
@@ -391,6 +417,9 @@ export function useVoiceAgent() {
         captureStartupAbortRef.current = abortController;
         activeInputModeRef.current = mode;
         activePipelineModeRef.current = pipelineMode;
+        let insertionResultPromise:
+          | Promise<{ sessionId: string; error?: never } | { sessionId?: never; error: unknown }>
+          | null = null;
         if (pipelineMode === 'transcription') {
           const bridge = window.resonanceDesktop;
           if (!bridge) {
@@ -399,15 +428,10 @@ export function useVoiceAgent() {
             activePipelineModeRef.current = null;
             return;
           }
-          try {
-            insertionSessionRef.current = await bridge.beginTextInsertion();
-          } catch (error) {
-            console.error('The transcription target could not be captured.', error);
-            showPillError();
-            activeInputModeRef.current = null;
-            activePipelineModeRef.current = null;
-            return;
-          }
+          insertionResultPromise = bridge.beginTextInsertion().then(
+            sessionId => ({ sessionId }),
+            error => ({ error })
+          );
         }
         setAgentMode(mode === 'agent');
         if (pipelineMode === 'transcription') {
@@ -415,9 +439,9 @@ export function useVoiceAgent() {
         }
         setPhase('acquiring-microphone');
 
-        let capture: MicrophoneCapture;
+        let capture = captureRef.current;
         try {
-          capture = await MicrophoneCapture.open(abortController.signal);
+          if (!capture) capture = await ensureCapture();
         } catch (error) {
           if (generation !== turnGenerationRef.current) return;
 
@@ -435,23 +459,32 @@ export function useVoiceAgent() {
         }
 
         if (generation !== turnGenerationRef.current) {
-          await capture.dispose();
+          await capture.discardAndPause();
           return;
         }
 
-        captureRef.current = capture;
+        let captureReady = false;
+        let finishPending = false;
         try {
           await capture.start({
             mode,
             onUtterance: () => {
-              void finishCaptureAndTranscribe(capture, generation);
+              if (captureReady) {
+                void finishCaptureAndTranscribe(capture, generation);
+              } else {
+                finishPending = true;
+              }
             },
             onMaxDuration: () => {
               if (
                 generation === turnGenerationRef.current &&
                 captureRef.current === capture
               ) {
-                void finishCaptureAndTranscribe(capture, generation);
+                if (captureReady) {
+                  void finishCaptureAndTranscribe(capture, generation);
+                } else {
+                  finishPending = true;
+                }
               }
             }
           });
@@ -473,6 +506,28 @@ export function useVoiceAgent() {
           return;
         }
 
+        if (insertionResultPromise) {
+          const insertionResult = await insertionResultPromise;
+          if ('error' in insertionResult) {
+            activeInputModeRef.current = null;
+            activePipelineModeRef.current = null;
+            await capture.discardAndPause();
+            if (generation !== turnGenerationRef.current) return;
+
+            console.error(
+              'The transcription target could not be captured.',
+              insertionResult.error
+            );
+            setAgentMode(false);
+            showPillError();
+            setPhase('idle');
+            return;
+          }
+          insertionSessionRef.current = insertionResult.sessionId;
+        }
+
+        captureReady = true;
+
         if (
           generation !== turnGenerationRef.current ||
           captureRef.current !== capture
@@ -485,7 +540,7 @@ export function useVoiceAgent() {
         }
 
         setPhase('listening');
-        if (mode === 'hold' && holdReleasePendingRef.current) {
+        if (finishPending || (mode === 'hold' && holdReleasePendingRef.current)) {
           void finishCaptureAndTranscribe(capture, generation);
         }
       })();
@@ -503,6 +558,7 @@ export function useVoiceAgent() {
     [
       appendTurn,
       finishCaptureAndTranscribe,
+      ensureCapture,
       prepareForTurn,
       setAgentMode,
       setPhase,
@@ -688,10 +744,18 @@ export function useVoiceAgent() {
     }
   }, [settleTurn, toggleSpeech]);
 
+  useEffect(() => {
+    void ensureCapture().catch(error => {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      console.warn('Microphone warmup failed; the next voice action will retry.', error);
+    });
+  }, [ensureCapture]);
+
   useEffect(
     () => () => {
       turnGenerationRef.current += 1;
       captureStartupAbortRef.current?.abort();
+      captureOpenAbortRef.current?.abort();
       turnAbortRef.current?.abort();
       turnAbortRef.current = null;
       insertionSessionRef.current = null;
