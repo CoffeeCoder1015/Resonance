@@ -13,6 +13,10 @@ second microphone or transcription lifecycle.
 
 ## Development
 
+The Windows desktop build compiles `native/windows-paste.c` into the clipboard
+insertion helper. Install MinGW-w64 GCC and make `gcc.exe` available on `PATH`,
+or set `RESONANCE_CC` to a compatible compiler executable.
+
 Start the existing Python backend when voice/model features are needed:
 
 ```powershell

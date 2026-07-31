@@ -30,7 +30,7 @@ import {
 } from './windows.js';
 import {
   getForegroundTarget,
-  insertUnicodeText,
+  pasteTextViaClipboard,
   type ForegroundTarget
 } from './windows-text-insertion.js';
 
@@ -65,6 +65,8 @@ const ACTIVE_PILL_HIT_WIDTH = 280;
 const EXPANDED_PILL_HIT_HEIGHT = 56;
 const EXPANDED_PILL_CENTER_OFFSET_X = -26;
 let globalHoldActive = false;
+const pressedCtrlKeys = new Set<number>();
+const pressedMetaKeys = new Set<number>();
 const INSERTION_SESSION_MAX_AGE_MS = 10 * 60_000;
 
 interface StoredInsertionTarget {
@@ -74,7 +76,7 @@ interface StoredInsertionTarget {
 
 async function beginTextInsertion(): Promise<string> {
   if (process.platform !== 'win32') {
-    throw new Error('Direct text insertion is currently supported on Windows only.');
+    throw new Error('Automatic text insertion is currently supported on Windows only.');
   }
 
   const target = await getForegroundTarget();
@@ -90,6 +92,11 @@ async function beginTextInsertion(): Promise<string> {
   insertionTargets.set(sessionId, {
     target,
     createdAt: Date.now()
+  });
+  console.info('[text-insertion] Captured target.', {
+    sessionId,
+    windowHandle: target.windowHandle,
+    processId: target.processId
   });
   return sessionId;
 }
@@ -118,7 +125,22 @@ async function insertTextAtCaret(
   }
 
   try {
+    console.info('[text-insertion] Insertion requested.', {
+      sessionId,
+      textCodeUnits: text.length,
+      textUtf8Bytes: Buffer.byteLength(text, 'utf8'),
+      sessionAgeMs: Date.now() - stored.createdAt,
+      expectedWindowHandle: stored.target.windowHandle,
+      expectedProcessId: stored.target.processId
+    });
     const foreground = await getForegroundTarget();
+    console.info('[text-insertion] Foreground target checked.', {
+      expected: stored.target,
+      actual: foreground,
+      matches:
+        foreground?.windowHandle === stored.target.windowHandle &&
+        foreground?.processId === stored.target.processId
+    });
     if (
       !foreground ||
       foreground.windowHandle !== stored.target.windowHandle ||
@@ -130,32 +152,59 @@ async function insertTextAtCaret(
       };
     }
 
-    const result = await insertUnicodeText(stored.target, text);
-    if (result.status === 'inserted') return { status: 'inserted' };
+    const result = await pasteTextViaClipboard(stored.target, text);
+    console.info('[text-insertion] Native helper completed.', result);
+    if (result.status === 'inserted') {
+      console.info('[text-insertion] Paste completed.', {
+        clipboardRestore: result.clipboardRestore,
+        diagnostics: result.diagnostics
+      });
+      return { status: 'inserted' };
+    }
+    if (result.status === 'modifiers-held') {
+      return {
+        status: 'failed',
+        reason: 'Release Ctrl, Windows, Alt, and Shift before inserting text.'
+      };
+    }
     if (result.status === 'target-changed') {
       return {
         status: 'failed',
         reason: 'The active application changed immediately before insertion.'
       };
     }
-    if (result.status === 'partial') {
+    if (result.status === 'restore-failed') {
       return {
         status: 'failed',
-        reason: `Windows inserted only ${result.insertedCodeUnits} of ${text.length} UTF-16 code units.`
+        reason:
+          'The text was pasted, but the previous clipboard contents could not be restored.'
+      };
+    }
+    if (result.status === 'clipboard-failed') {
+      return {
+        status: 'failed',
+        reason:
+          result.nativeError === 0
+            ? 'The Windows clipboard is unavailable.'
+            : `The Windows clipboard could not be accessed (error ${result.nativeError}).`
       };
     }
     return {
       status: 'failed',
       reason:
         result.nativeError === 0
-          ? 'Windows blocked text insertion, possibly because the target runs at a higher integrity level.'
-          : `Windows text insertion failed with error ${result.nativeError}.`
+          ? 'Windows blocked the paste shortcut, possibly because the target runs at a higher integrity level.'
+          : `Windows paste failed with error ${result.nativeError}. SendInput accepted ${result.diagnostics.sent ?? '?'} of ${result.diagnostics.requested ?? '4'} events using INPUT size ${result.diagnostics.inputSize ?? '?'} on a ${result.diagnostics.pointerSize === '8' ? '64-bit' : '32-bit'} process.`
     };
   } catch (error) {
-    console.error('Direct text insertion failed.', error);
+    console.error('[text-insertion] Clipboard text insertion failed.', {
+      sessionId,
+      expectedTarget: stored.target,
+      error
+    });
     return {
       status: 'failed',
-      reason: error instanceof Error ? error.message : 'Direct text insertion failed.'
+      reason: error instanceof Error ? error.message : 'Clipboard text insertion failed.'
     };
   }
 }
@@ -216,30 +265,29 @@ function showExpanded() {
   expandedWindow?.focus();
 }
 
-function isHotkeyModifier(keycode: number) {
-  return (
-    keycode === UiohookKey.Ctrl ||
-    keycode === UiohookKey.CtrlRight ||
-    keycode === UiohookKey.Meta ||
-    keycode === UiohookKey.MetaRight
-  );
+function trackHotkeyModifier(keycode: number, pressed: boolean) {
+  const target =
+    keycode === UiohookKey.Ctrl || keycode === UiohookKey.CtrlRight
+      ? pressedCtrlKeys
+      : keycode === UiohookKey.Meta || keycode === UiohookKey.MetaRight
+        ? pressedMetaKeys
+        : null;
+  if (!target) return false;
+  if (pressed) target.add(keycode);
+  else target.delete(keycode);
+  return true;
 }
 
 function installGlobalHotkey() {
   const handleKeyDown = (event: UiohookKeyboardEvent) => {
-    if (
-      globalHoldActive ||
-      !isHotkeyModifier(event.keycode) ||
-      !event.ctrlKey ||
-      !event.metaKey
-    ) {
-      return;
-    }
+    if (!trackHotkeyModifier(event.keycode, true) || globalHoldActive) return;
+    if (pressedCtrlKeys.size === 0 || pressedMetaKeys.size === 0) return;
     globalHoldActive = true;
     expandedWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
   };
   const handleKeyUp = (event: UiohookKeyboardEvent) => {
-    if (!globalHoldActive || !isHotkeyModifier(event.keycode)) return;
+    if (!trackHotkeyModifier(event.keycode, false) || !globalHoldActive) return;
+    if (pressedCtrlKeys.size !== 0 || pressedMetaKeys.size !== 0) return;
     globalHoldActive = false;
     expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   };
@@ -251,9 +299,11 @@ function installGlobalHotkey() {
 }
 
 function uninstallGlobalHotkey() {
+  pressedCtrlKeys.clear();
+  pressedMetaKeys.clear();
   if (globalHoldActive) {
     globalHoldActive = false;
-      expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
+    expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   }
   uIOhook.stop();
 }

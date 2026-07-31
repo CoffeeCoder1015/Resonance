@@ -1,152 +1,133 @@
-import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { writeFile, unlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
-const execFileAsync = promisify(execFile);
-const POWERSHELL_TIMEOUT_MS = 10_000;
-
-const FOREGROUND_WINDOW_SCRIPT = String.raw`
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class ResonanceForegroundWindow {
-  [DllImport("user32.dll")]
-  public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")]
-  public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-}
-'@
-$window = [ResonanceForegroundWindow]::GetForegroundWindow()
-$processId = [uint32]0
-[void][ResonanceForegroundWindow]::GetWindowThreadProcessId($window, [ref]$processId)
-[Console]::Out.Write($window.ToInt64().ToString() + ':' + $processId.ToString())
-`;
-
-const SEND_UNICODE_SCRIPT = String.raw`
-param([string]$TextPath, [string]$ExpectedWindow)
-Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-public static class ResonanceUnicodeInput {
-  private const uint INPUT_KEYBOARD = 1;
-  private const uint KEYEVENTF_KEYUP = 0x0002;
-  private const uint KEYEVENTF_UNICODE = 0x0004;
-
-  [StructLayout(LayoutKind.Sequential)]
-  private struct INPUT {
-    public uint type;
-    public InputUnion input;
-  }
-
-  [StructLayout(LayoutKind.Explicit)]
-  private struct InputUnion {
-    [FieldOffset(0)]
-    public KEYBDINPUT keyboard;
-  }
-
-  [StructLayout(LayoutKind.Sequential)]
-  private struct KEYBDINPUT {
-    public ushort virtualKey;
-    public ushort scanCode;
-    public uint flags;
-    public uint time;
-    public UIntPtr extraInfo;
-  }
-
-  [DllImport("user32.dll")]
-  private static extern IntPtr GetForegroundWindow();
-
-  [DllImport("user32.dll", SetLastError = true)]
-  private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
-
-  public static string Insert(string text, long expectedWindow) {
-    if (GetForegroundWindow().ToInt64() != expectedWindow) {
-      return "target-changed:0";
-    }
-
-    INPUT[] inputs = new INPUT[text.Length * 2];
-    for (int index = 0; index < text.Length; index++) {
-      ushort codeUnit = text[index];
-      inputs[index * 2] = new INPUT {
-        type = INPUT_KEYBOARD,
-        input = new InputUnion {
-          keyboard = new KEYBDINPUT {
-            scanCode = codeUnit,
-            flags = KEYEVENTF_UNICODE
-          }
-        }
-      };
-      inputs[index * 2 + 1] = new INPUT {
-        type = INPUT_KEYBOARD,
-        input = new InputUnion {
-          keyboard = new KEYBDINPUT {
-            scanCode = codeUnit,
-            flags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-          }
-        }
-      };
-    }
-
-    uint inserted = SendInput(
-      (uint)inputs.Length,
-      inputs,
-      Marshal.SizeOf(typeof(INPUT))
-    );
-    if (inserted == inputs.Length) {
-      return "inserted:" + text.Length.ToString();
-    }
-    if (inserted == 0) {
-      return "send-failed:" + Marshal.GetLastWin32Error().ToString();
-    }
-    return "partial:" + (inserted / 2).ToString();
-  }
-}
-'@
-$text = [System.IO.File]::ReadAllText($TextPath, [System.Text.Encoding]::Unicode)
-[Console]::Out.Write([ResonanceUnicodeInput]::Insert($text, [long]$ExpectedWindow))
-`;
+const NATIVE_HELPER_TIMEOUT_MS = 10_000;
+const CLIPBOARD_RESTORE_DELAY_MS = 750;
+const directory = path.dirname(fileURLToPath(import.meta.url));
 
 export interface ForegroundTarget {
   windowHandle: string;
   processId: number;
 }
 
-export type NativeInsertionResult =
-  | { status: 'inserted'; insertedCodeUnits: number }
-  | { status: 'target-changed'; insertedCodeUnits: 0 }
-  | { status: 'partial'; insertedCodeUnits: number }
-  | { status: 'send-failed'; insertedCodeUnits: 0; nativeError: number };
+export type NativeInsertionDiagnostics = Record<string, string>;
 
-async function runPowerShell(script: string, args: string[] = []) {
-  return execFileAsync(
-    'powershell.exe',
-    [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      script,
-      ...args
-    ],
-    {
-      encoding: 'utf8',
-      timeout: POWERSHELL_TIMEOUT_MS,
-      windowsHide: true
+export type NativeInsertionResult = (
+  | {
+      status: 'inserted';
+      clipboardRestore: 'restored' | 'skipped';
     }
+  | { status: 'modifiers-held' }
+  | { status: 'target-changed' }
+  | { status: 'clipboard-failed'; nativeError: number }
+  | { status: 'restore-failed'; nativeError: number }
+  | { status: 'send-failed'; nativeError: number }
+) & { diagnostics: NativeInsertionDiagnostics };
+
+interface NativeHelperResult {
+  stdout: string;
+  stderr: string;
+}
+
+function nativeHelperPath() {
+  const runningAsPackagedElectron =
+    Boolean(process.versions.electron) && !process.defaultApp;
+  if (runningAsPackagedElectron) {
+    return path.join(
+      process.resourcesPath,
+      'app',
+      'native',
+      'resonance-paste.exe'
+    );
+  }
+  return path.resolve(directory, '..', 'native', 'bin', 'resonance-paste.exe');
+}
+
+function runNativeHelper(
+  args: string[],
+  stdinText = ''
+): Promise<NativeHelperResult> {
+  return new Promise((resolve, reject) => {
+    const helper = nativeHelperPath();
+    const child = spawn(helper, args, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, NATIVE_HELPER_TIMEOUT_MS);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', error => {
+      finish(() => {
+        reject(
+          error.message.includes('ENOENT')
+            ? new Error(
+                `The native text-insertion helper is missing at ${helper}. Run npm run build in the desktop directory.`
+              )
+            : error
+        );
+      });
+    });
+    child.once('close', code => {
+      finish(() => {
+        if (timedOut) {
+          reject(new Error('The native clipboard insertion helper timed out.'));
+          return;
+        }
+        if (code !== 0) {
+          reject(
+            new Error(
+              `The native clipboard helper exited with code ${code}: ${stderr.trim() || 'No error output.'}`
+            )
+          );
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+    });
+
+    child.stdin.end(stdinText, 'utf8');
+  });
+}
+
+function parseDiagnostics(fields: string[]): NativeInsertionDiagnostics {
+  return Object.fromEntries(
+    fields.map(field => {
+      const separator = field.indexOf('=');
+      return separator === -1
+        ? [field, '']
+        : [field.slice(0, separator), field.slice(separator + 1)];
+    })
   );
 }
 
 export async function getForegroundTarget(): Promise<ForegroundTarget | null> {
   if (process.platform !== 'win32') return null;
 
-  const { stdout } = await runPowerShell(FOREGROUND_WINDOW_SCRIPT);
+  const { stdout, stderr } = await runNativeHelper(['--foreground']);
+  if (stderr.trim()) {
+    console.warn('[text-insertion] Native foreground helper stderr:', stderr.trim());
+  }
   const match = stdout.trim().match(/^(-?\d+):(\d+)$/);
   if (!match || match[1] === '0') return null;
   return {
@@ -155,38 +136,49 @@ export async function getForegroundTarget(): Promise<ForegroundTarget | null> {
   };
 }
 
-export async function insertUnicodeText(
+export async function pasteTextViaClipboard(
   target: ForegroundTarget,
   text: string
 ): Promise<NativeInsertionResult> {
-  const textPath = path.join(
-    tmpdir(),
-    `resonance-insertion-${process.pid}-${randomUUID()}.txt`
-  );
-
-  try {
-    await writeFile(textPath, text, { encoding: 'utf16le', flag: 'wx' });
-    const { stdout } = await runPowerShell(SEND_UNICODE_SCRIPT, [
-      textPath,
-      target.windowHandle
-    ]);
-    const [status, rawValue] = stdout.trim().split(':', 2);
-    const value = Number(rawValue);
-
-    if (status === 'inserted' && Number.isSafeInteger(value)) {
-      return { status, insertedCodeUnits: value };
-    }
-    if (status === 'target-changed') {
-      return { status, insertedCodeUnits: 0 };
-    }
-    if (status === 'partial' && Number.isSafeInteger(value)) {
-      return { status, insertedCodeUnits: value };
-    }
-    if (status === 'send-failed' && Number.isSafeInteger(value)) {
-      return { status, insertedCodeUnits: 0, nativeError: value };
-    }
-    throw new Error(`Windows returned an invalid insertion result: ${stdout.trim()}`);
-  } finally {
-    await unlink(textPath).catch(() => undefined);
+  if (!/^-?\d+$/.test(target.windowHandle)) {
+    throw new Error('The captured Windows target is invalid.');
   }
+
+  const { stdout, stderr } = await runNativeHelper(
+    [
+      '--paste',
+      '--window',
+      target.windowHandle,
+      '--restore-delay',
+      CLIPBOARD_RESTORE_DELAY_MS.toString()
+    ],
+    text
+  );
+  if (stderr.trim()) {
+    console.info('[text-insertion] Native helper trace:\n' + stderr.trim());
+  }
+
+  const [result, ...diagnosticFields] = stdout.trim().split('|');
+  const [status, rawValue] = result.split(':', 2);
+  const diagnostics = parseDiagnostics(diagnosticFields);
+  const value = Number(rawValue);
+
+  if (status === 'inserted' && rawValue === 'restored') {
+    return { status, clipboardRestore: 'restored', diagnostics };
+  }
+  if (status === 'inserted' && rawValue === 'restore-skipped') {
+    return { status, clipboardRestore: 'skipped', diagnostics };
+  }
+  if (status === 'target-changed' || status === 'modifiers-held') {
+    return { status, diagnostics };
+  }
+  if (
+    (status === 'clipboard-failed' ||
+      status === 'restore-failed' ||
+      status === 'send-failed') &&
+    Number.isSafeInteger(value)
+  ) {
+    return { status, nativeError: value, diagnostics };
+  }
+  throw new Error(`Windows returned an invalid insertion result: ${stdout.trim()}`);
 }
