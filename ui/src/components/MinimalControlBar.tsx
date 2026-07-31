@@ -14,6 +14,7 @@ import {
   X
 } from 'lucide-react';
 import { AgentState, DESIGN_VARIANTS, VisualTheme } from '../types/voice';
+import type { HotkeySettings, UpdateHotkeysResult } from '../types/desktop';
 import { AgentVoiceRing } from './AgentVoiceRing';
 import { AvatarCanvas } from './AvatarCanvas';
 import { ProviderSettingsPanel } from './ProviderSettingsPanel';
@@ -25,6 +26,8 @@ interface MinimalControlBarProps {
   frequencies: Uint8Array;
   speechOutputEnabled: boolean;
   agentModeEnabled: boolean;
+  hotkeys: HotkeySettings | null;
+  onUpdateHotkeys: (settings: HotkeySettings) => Promise<UpdateHotkeysResult>;
   onToggleListen: () => void;
   onSubmitTextTurn: (text: string) => void;
   onToggleSpeechOutput: () => void;
@@ -40,6 +43,8 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
   frequencies,
   speechOutputEnabled,
   agentModeEnabled,
+  hotkeys,
+  onUpdateHotkeys,
   onToggleListen,
   onSubmitTextTurn,
   onToggleSpeechOutput,
@@ -288,7 +293,11 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
                   </div>
                 </div>
               ) : (
-                <ProviderSettingsPanel section={settingsSection} />
+                <ProviderSettingsPanel
+                  section={settingsSection}
+                  hotkeys={hotkeys}
+                  onUpdateHotkeys={onUpdateHotkeys}
+                />
               )}
             </div>
           </section>

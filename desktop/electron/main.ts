@@ -15,12 +15,18 @@ import {
 import { uIOhook, UiohookKey, type UiohookKeyboardEvent } from 'uiohook-napi';
 import {
   CHANNELS,
+  DEFAULT_HOTKEYS,
   DEFAULT_SNAPSHOT,
   type BeginTextInsertionResult,
+  type HotkeyCombo,
+  type HotkeyKey,
+  type HotkeyModifier,
+  type HotkeySettings,
   type InsertTextResult,
   type PillStatus,
   type RuntimeCommand,
-  type RuntimeSnapshot
+  type RuntimeSnapshot,
+  type UpdateHotkeysResult
 } from './contract.js';
 import { installAppProtocol } from './protocol.js';
 import {
@@ -66,10 +72,111 @@ const HOVERED_IDLE_HIT_WIDTH = 184;
 const ACTIVE_PILL_HIT_WIDTH = 280;
 const EXPANDED_PILL_HIT_HEIGHT = 56;
 const EXPANDED_PILL_CENTER_OFFSET_X = -26;
-let globalHoldActive = false;
-const pressedCtrlKeys = new Set<number>();
-const pressedMetaKeys = new Set<number>();
 const INSERTION_SESSION_MAX_AGE_MS = 10 * 60_000;
+
+const MODIFIER_ORDER: Record<HotkeyModifier, number> = {
+  ctrl: 0,
+  alt: 1,
+  shift: 2,
+  meta: 3
+};
+
+const MODIFIER_KEYCODES: Record<HotkeyModifier, number[]> = {
+  ctrl: [UiohookKey.Ctrl, UiohookKey.CtrlRight],
+  alt: [UiohookKey.Alt, UiohookKey.AltRight],
+  shift: [UiohookKey.Shift, UiohookKey.ShiftRight],
+  meta: [UiohookKey.Meta, UiohookKey.MetaRight]
+};
+
+const EXTENDED_KEYCODES: Record<string, number> = {
+  pause: 0x0e45,
+  contextmenu: 0x0e5d,
+  volumeup: 0xe030,
+  volumedown: 0xe02e,
+  volumemute: 0xe020,
+  mediatracknext: 0xe019,
+  mediatrackprevious: 0xe010,
+  mediaplaypause: 0xe022,
+  mediastop: 0xe024,
+  mediaselect: 0xe06d,
+  browserback: 0xe06a,
+  browserforward: 0xe069,
+  browserrefresh: 0xe067,
+  browserstop: 0xe068,
+  browsersearch: 0xe065,
+  browserfavorites: 0xe066,
+  browserhome: 0xe032,
+  appmail: 0xe06c,
+  appcalculator: 0xe021,
+  appmusic: 0xe03c
+};
+
+function buildKeyKeycodes(): Record<HotkeyKey, number[]> {
+  const result = {} as Record<HotkeyKey, number[]>;
+  const single = (keycode: number) => [keycode];
+
+  for (const key of 'abcdefghijklmnopqrstuvwxyz0123456789') {
+    result[key as HotkeyKey] = single((UiohookKey as Record<string, number>)[key.toUpperCase()]);
+  }
+  for (let index = 1; index <= 24; index += 1) {
+    result[`f${index}` as HotkeyKey] = single(
+      (UiohookKey as Record<string, number>)[`F${index}`]
+    );
+  }
+
+  result.space = single(UiohookKey.Space);
+  result.enter = single(UiohookKey.Enter);
+  result.tab = single(UiohookKey.Tab);
+  result.backspace = single(UiohookKey.Backspace);
+  result.arrowup = single(UiohookKey.ArrowUp);
+  result.arrowdown = single(UiohookKey.ArrowDown);
+  result.arrowleft = single(UiohookKey.ArrowLeft);
+  result.arrowright = single(UiohookKey.ArrowRight);
+  result.insert = single(UiohookKey.Insert);
+  result.delete = single(UiohookKey.Delete);
+  result.home = single(UiohookKey.Home);
+  result.end = single(UiohookKey.End);
+  result.pageup = single(UiohookKey.PageUp);
+  result.pagedown = single(UiohookKey.PageDown);
+  result.capslock = single(UiohookKey.CapsLock);
+  result.numlock = single(UiohookKey.NumLock);
+  result.scrolllock = single(UiohookKey.ScrollLock);
+  result.printscreen = single(UiohookKey.PrintScreen);
+  result.semicolon = single(UiohookKey.Semicolon);
+  result.equal = single(UiohookKey.Equal);
+  result.comma = single(UiohookKey.Comma);
+  result.minus = single(UiohookKey.Minus);
+  result.period = single(UiohookKey.Period);
+  result.slash = single(UiohookKey.Slash);
+  result.backquote = single(UiohookKey.Backquote);
+  result.bracketleft = single(UiohookKey.BracketLeft);
+  result.backslash = single(UiohookKey.Backslash);
+  result.bracketright = single(UiohookKey.BracketRight);
+  result.quote = single(UiohookKey.Quote);
+
+  for (let digit = 0; digit <= 9; digit += 1) {
+    const keycode = (UiohookKey as Record<string, number>)[`Numpad${digit}`];
+    result[`numpad${digit}` as HotkeyKey] = [keycode, 0xee00 | keycode];
+  }
+  result.numpadmultiply = single(UiohookKey.NumpadMultiply);
+  result.numpadadd = single(UiohookKey.NumpadAdd);
+  result.numpadsubtract = single(UiohookKey.NumpadSubtract);
+  result.numpaddecimal = single(UiohookKey.NumpadDecimal);
+  result.numpaddivide = single(UiohookKey.NumpadDivide);
+  result.numpadenter = single(UiohookKey.NumpadEnter);
+
+  for (const [key, keycode] of Object.entries(EXTENDED_KEYCODES)) {
+    result[key as HotkeyKey] = single(keycode);
+  }
+  return result;
+}
+
+const KEY_KEYCODES = buildKeyKeycodes();
+
+let hotkeys: HotkeySettings = DEFAULT_HOTKEYS;
+let globalHotkeyActive = false;
+let globalHotkeyHookStarted = false;
+const pressedHotkeyKeycodes = new Set<number>();
 
 interface StoredInsertionTarget {
   target: ForegroundTarget;
@@ -307,47 +414,124 @@ function showExpanded() {
   expandedWindow?.focus();
 }
 
-function trackHotkeyModifier(keycode: number, pressed: boolean) {
-  const target =
-    keycode === UiohookKey.Ctrl || keycode === UiohookKey.CtrlRight
-      ? pressedCtrlKeys
-      : keycode === UiohookKey.Meta || keycode === UiohookKey.MetaRight
-        ? pressedMetaKeys
-        : null;
-  if (!target) return false;
-  if (pressed) target.add(keycode);
-  else target.delete(keycode);
-  return true;
+function hotkeysPath() {
+  return path.join(app.getPath('userData'), 'hotkeys.json');
+}
+
+function describeCombo(combo: HotkeyCombo) {
+  const modifiers = combo.modifiers.map(modifier => modifier.toUpperCase()).join('+');
+  return combo.key === undefined ? modifiers : `${modifiers}+${combo.key.toUpperCase()}`;
+}
+
+function normalizeCombo(value: unknown, allowNoModifier: boolean): HotkeyCombo | null {
+  if (!value || typeof value !== 'object') return null;
+  const combo = value as Partial<HotkeyCombo>;
+  if (!Array.isArray(combo.modifiers)) return null;
+
+  const modifiers: HotkeyModifier[] = [];
+  for (const modifier of combo.modifiers) {
+    if (
+      modifier !== 'ctrl' &&
+      modifier !== 'alt' &&
+      modifier !== 'shift' &&
+      modifier !== 'meta'
+    ) {
+      return null;
+    }
+    if (!modifiers.includes(modifier)) modifiers.push(modifier);
+  }
+  modifiers.sort((a, b) => MODIFIER_ORDER[a] - MODIFIER_ORDER[b]);
+
+  let key: HotkeyKey | undefined;
+  if (combo.key !== undefined) {
+    if (typeof combo.key !== 'string' || !(combo.key in KEY_KEYCODES)) return null;
+    key = combo.key as HotkeyKey;
+  }
+
+  if (modifiers.length === 0 && key === undefined) return null;
+  if (!allowNoModifier && modifiers.length === 0) return null;
+  return { modifiers, key };
+}
+
+function combosEqual(a: HotkeyCombo, b: HotkeyCombo) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function normalizeHotkeys(value: unknown): HotkeySettings | null {
+  if (!value || typeof value !== 'object') return null;
+  const settings = value as Partial<HotkeySettings>;
+  const globalHoldToTalk = normalizeCombo(settings.globalHoldToTalk, false);
+  const inWindowHoldToTalk = normalizeCombo(settings.inWindowHoldToTalk, true);
+  if (!globalHoldToTalk || !inWindowHoldToTalk) return null;
+  if (combosEqual(globalHoldToTalk, inWindowHoldToTalk)) return null;
+  return { globalHoldToTalk, inWindowHoldToTalk };
+}
+
+function loadHotkeys(): HotkeySettings {
+  try {
+    const parsed = JSON.parse(readFileSync(hotkeysPath(), 'utf8'));
+    return normalizeHotkeys(parsed) ?? DEFAULT_HOTKEYS;
+  } catch {
+    return DEFAULT_HOTKEYS;
+  }
+}
+
+function saveHotkeys(settings: HotkeySettings) {
+  writeFileSync(hotkeysPath(), JSON.stringify(settings, null, 2));
+}
+
+function comboIsHeld(combo: HotkeyCombo) {
+  for (const modifier of combo.modifiers) {
+    if (!MODIFIER_KEYCODES[modifier].some(code => pressedHotkeyKeycodes.has(code))) {
+      return false;
+    }
+  }
+  if (combo.key === undefined) return true;
+  return KEY_KEYCODES[combo.key].some(code => pressedHotkeyKeycodes.has(code));
+}
+
+function applyHotkeys(settings: HotkeySettings) {
+  hotkeys = settings;
+  saveHotkeys(settings);
+  pressedHotkeyKeycodes.clear();
+  if (globalHotkeyActive) {
+    globalHotkeyActive = false;
+    pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
+  }
+  console.info(`Global hold-to-talk hotkey: ${describeCombo(hotkeys.globalHoldToTalk)}`);
 }
 
 function installGlobalHotkey() {
+  if (globalHotkeyHookStarted) return;
+  globalHotkeyHookStarted = true;
+
   const handleKeyDown = (event: UiohookKeyboardEvent) => {
-    if (!trackHotkeyModifier(event.keycode, true) || globalHoldActive) return;
-    if (pressedCtrlKeys.size === 0 || pressedMetaKeys.size === 0) return;
-    globalHoldActive = true;
+    pressedHotkeyKeycodes.add(event.keycode);
+    if (globalHotkeyActive || !comboIsHeld(hotkeys.globalHoldToTalk)) return;
+    globalHotkeyActive = true;
     pillWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
   };
   const handleKeyUp = (event: UiohookKeyboardEvent) => {
-    if (!trackHotkeyModifier(event.keycode, false) || !globalHoldActive) return;
-    if (pressedCtrlKeys.size !== 0 || pressedMetaKeys.size !== 0) return;
-    globalHoldActive = false;
+    pressedHotkeyKeycodes.delete(event.keycode);
+    if (!globalHotkeyActive || comboIsHeld(hotkeys.globalHoldToTalk)) return;
+    globalHotkeyActive = false;
     pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   };
 
   uIOhook.on('keydown', handleKeyDown);
   uIOhook.on('keyup', handleKeyUp);
   uIOhook.start();
-  console.info('Registered global hold-to-talk hotkey: Ctrl+Windows');
+  console.info(`Registered global hold-to-talk hotkey: ${describeCombo(hotkeys.globalHoldToTalk)}`);
 }
 
 function uninstallGlobalHotkey() {
-  pressedCtrlKeys.clear();
-  pressedMetaKeys.clear();
-  if (globalHoldActive) {
-    globalHoldActive = false;
+  pressedHotkeyKeycodes.clear();
+  if (globalHotkeyActive) {
+    globalHotkeyActive = false;
     pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   }
   uIOhook.stop();
+  globalHotkeyHookStarted = false;
 }
 
 function setPillHovered(hovered: boolean) {
@@ -468,6 +652,24 @@ function installIpc() {
     snapshot = nextSnapshot;
     pillWindow?.webContents.send(CHANNELS.snapshot, snapshot);
   });
+  ipcMain.handle(CHANNELS.getHotkeys, () => hotkeys);
+  ipcMain.handle(CHANNELS.updateHotkeys, (_event, value: unknown) => {
+    if (_event.sender !== expandedWindow?.webContents) {
+      return {
+        status: 'failed',
+        reason: 'Shortcuts may only be changed by the expanded Resonance window.'
+      } satisfies UpdateHotkeysResult;
+    }
+    const next = normalizeHotkeys(value);
+    if (!next) {
+      return {
+        status: 'failed',
+        reason: 'That shortcut is not valid. Use at least one modifier for the global hotkey, and pick a shortcut that differs from the other.'
+      } satisfies UpdateHotkeysResult;
+    }
+    applyHotkeys(next);
+    return { status: 'ok', settings: hotkeys } satisfies UpdateHotkeysResult;
+  });
   ipcMain.on(CHANNELS.pillStatus, (event, nextStatus: unknown) => {
     if (event.sender !== pillWindow?.webContents) return;
     if (!['idle', 'recording', 'processing', 'error'].includes(String(nextStatus))) return;
@@ -578,6 +780,7 @@ if (!hasSingleInstanceLock) {
     installAppProtocol(roots.main, roots.pill);
     installPermissionPolicy();
     installIpc();
+    hotkeys = loadHotkeys();
     await createTray();
     screen.on('display-added', ensurePillVisible);
     screen.on('display-removed', ensurePillVisible);

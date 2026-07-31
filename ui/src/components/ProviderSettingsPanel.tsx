@@ -9,13 +9,20 @@ import {
   type ASRProviderOption,
   type ResponseProviderOption
 } from '../services/backend';
+import type { HotkeySettings, UpdateHotkeysResult } from '../types/desktop';
 import { HotkeySettingsPanel } from './HotkeySettingsPanel';
 
 interface ProviderSettingsPanelProps {
   section: 'transcription' | 'agent';
+  hotkeys: HotkeySettings | null;
+  onUpdateHotkeys: (settings: HotkeySettings) => Promise<UpdateHotkeysResult>;
 }
 
-export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
+export function ProviderSettingsPanel({
+  section,
+  hotkeys,
+  onUpdateHotkeys
+}: ProviderSettingsPanelProps) {
   const [responseProviderOptions, setResponseProviderOptions] = useState<
     ResponseProviderOption[]
   >([]);
@@ -165,7 +172,7 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
           Changing this unloads the active speech model and loads the selected model.
         </p>
       </div>
-      <HotkeySettingsPanel />
+      <HotkeySettingsPanel hotkeys={hotkeys} onUpdateHotkeys={onUpdateHotkeys} />
       </>
       )}
 

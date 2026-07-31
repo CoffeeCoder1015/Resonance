@@ -1,19 +1,162 @@
-import { Keyboard, RotateCcw } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Keyboard, Loader2, RotateCcw, X } from 'lucide-react';
+import type {
+  HotkeyCombo,
+  HotkeySettings,
+  UpdateHotkeysResult
+} from '../types/desktop';
+import { DEFAULT_HOTKEYS } from '../types/desktop';
+import {
+  describeCombo,
+  hotkeyKeyFromEventCode,
+  keyLabel,
+  modifierFromDomKey,
+  modifierLabel
+} from '../services/hotkeys';
 
-const shortcuts = [
+interface HotkeySettingsPanelProps {
+  hotkeys: HotkeySettings | null;
+  onUpdateHotkeys: (settings: HotkeySettings) => Promise<UpdateHotkeysResult>;
+}
+
+type CapturingTarget = 'global' | 'in-window';
+
+const rows = [
   {
+    id: 'global' as const,
     label: 'Global push-to-talk',
-    description: 'Works while Resonance is hidden in the tray.',
-    keys: ['Ctrl', 'Windows']
+    description: 'Works while Resonance is hidden in the tray.'
   },
   {
+    id: 'in-window' as const,
     label: 'In-window hold-to-talk',
-    description: 'Works while the expanded Resonance window is focused.',
-    keys: ['Space']
+    description: 'Works while the expanded Resonance window is focused.'
   }
 ];
 
-export function HotkeySettingsPanel() {
+interface CaptureState {
+  pressed: Set<string>;
+  modifiers: ('ctrl' | 'alt' | 'shift' | 'meta')[];
+  sawMainKey: boolean;
+}
+
+function freshCaptureState(): CaptureState {
+  return { pressed: new Set(), modifiers: [], sawMainKey: false };
+}
+
+export function HotkeySettingsPanel({
+  hotkeys,
+  onUpdateHotkeys
+}: HotkeySettingsPanelProps) {
+  const [capturingFor, setCapturingFor] = useState<CapturingTarget | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const captureRef = useRef<CaptureState>(freshCaptureState());
+
+  useEffect(() => {
+    if (!capturingFor || !hotkeys) return;
+    captureRef.current = freshCaptureState();
+    setCaptureError(null);
+
+    const commit = (combo: HotkeyCombo) => {
+      if (!hotkeys) return;
+      setSaving(true);
+      const next: HotkeySettings =
+        capturingFor === 'global'
+          ? { ...hotkeys, globalHoldToTalk: combo }
+          : { ...hotkeys, inWindowHoldToTalk: combo };
+      void onUpdateHotkeys(next)
+        .then(result => {
+          if (result.status === 'ok') {
+            setCapturingFor(null);
+            setCaptureError(null);
+          } else {
+            setCaptureError(result.reason);
+            captureRef.current = freshCaptureState();
+          }
+        })
+        .catch(error => {
+          setCaptureError(
+            error instanceof Error ? error.message : 'The shortcut could not be saved.'
+          );
+          captureRef.current = freshCaptureState();
+        })
+        .finally(() => setSaving(false));
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+      if (event.key === 'Escape') {
+        setCapturingFor(null);
+        setCaptureError(null);
+        return;
+      }
+
+      const modifier = modifierFromDomKey(event.key);
+      if (modifier) {
+        captureRef.current.pressed.add(event.key);
+        if (!captureRef.current.modifiers.includes(modifier)) {
+          captureRef.current.modifiers.push(modifier);
+        }
+        return;
+      }
+
+      const key = hotkeyKeyFromEventCode(event.code);
+      if (key === undefined) return;
+      captureRef.current.sawMainKey = true;
+      commit({ modifiers: [...captureRef.current.modifiers], key });
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const modifier = modifierFromDomKey(event.key);
+      if (!modifier) return;
+      captureRef.current.pressed.delete(event.key);
+      if (
+        captureRef.current.pressed.size === 0 &&
+        !captureRef.current.sawMainKey &&
+        captureRef.current.modifiers.length > 0
+      ) {
+        commit({ modifiers: [...captureRef.current.modifiers] });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
+    };
+  }, [capturingFor, hotkeys, onUpdateHotkeys]);
+
+  const cancelCapture = () => {
+    captureRef.current = freshCaptureState();
+    setCapturingFor(null);
+    setCaptureError(null);
+  };
+
+  const restoreDefaults = () => {
+    if (!hotkeys) return;
+    setSaving(true);
+    setCaptureError(null);
+    void onUpdateHotkeys({
+      globalHoldToTalk: { modifiers: [...DEFAULT_HOTKEYS.globalHoldToTalk.modifiers] },
+      inWindowHoldToTalk: { ...DEFAULT_HOTKEYS.inWindowHoldToTalk }
+    })
+      .then(result => {
+        if (result.status === 'failed') setCaptureError(result.reason);
+      })
+      .catch(error => {
+        setCaptureError(
+          error instanceof Error ? error.message : 'The defaults could not be restored.'
+        );
+      })
+      .finally(() => setSaving(false));
+  };
+
   return (
     <div className="mt-5 rounded-[1.5rem] border-[3px] border-black bg-[#d7f5ff] p-4 neo-shadow sm:p-5">
       <div className="flex items-start justify-between gap-3">
@@ -24,63 +167,111 @@ export function HotkeySettingsPanel() {
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <h4 className="text-sm font-black">Hold-to-talk shortcuts</h4>
-              <span className="rounded-md border-2 border-black bg-[#ffde00] px-2 py-0.5 font-mono text-[8px] font-black uppercase tracking-wider">
-                Coming soon
-              </span>
+              {capturingFor && (
+                <span className="flex items-center gap-1.5 rounded-md border-2 border-black bg-[#ffde00] px-2 py-0.5 font-mono text-[8px] font-black uppercase tracking-wider">
+                  <Loader2 className="h-3 w-3 animate-spin" stroke="3" />
+                  {saving ? 'Saving...' : 'Press a shortcut'}
+                </span>
+              )}
             </div>
             <p className="mt-1 text-xs font-semibold text-black/55">
-              Preview the default controls. Custom rebinding is not available yet.
+              {capturingFor
+                ? 'Press your new shortcut, or press Escape to cancel.'
+                : 'Rebind the push-to-talk controls. Settings are saved automatically.'}
             </p>
           </div>
         </div>
         <button
           type="button"
-          disabled
-          className="flex shrink-0 items-center gap-1.5 rounded-lg border-2 border-black bg-white px-2.5 py-2 text-[10px] font-black opacity-45"
-          title="Default shortcut restoration is coming soon"
+          onClick={restoreDefaults}
+          disabled={!hotkeys || capturingFor !== null || saving}
+          title="Restore the default shortcuts"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border-2 border-black bg-white px-2.5 py-2 text-[10px] font-black neo-press disabled:opacity-45"
         >
           <RotateCcw className="h-3.5 w-3.5" />
           Defaults
         </button>
       </div>
 
-      <div className="mt-4 space-y-3">
-        {shortcuts.map(shortcut => (
-          <div
-            key={shortcut.label}
-            className="flex flex-col gap-3 rounded-xl border-[3px] border-black bg-white p-3 sm:flex-row sm:items-center"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-black">{shortcut.label}</p>
-              <p className="mt-0.5 text-[11px] font-semibold text-black/50">
-                {shortcut.description}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5" aria-label={shortcut.keys.join(' plus ')}>
-              {shortcut.keys.map(key => (
-                <kbd
-                  key={key}
-                  className="min-w-12 rounded-lg border-2 border-black bg-[#fff8d6] px-3 py-2 text-center font-mono text-xs font-black shadow-[2px_2px_0_#000]"
-                >
-                  {key}
-                </kbd>
-              ))}
-            </div>
-            <button
-              type="button"
-              disabled
-              className="rounded-lg border-2 border-black bg-[#ffde00] px-3 py-2 text-xs font-black opacity-45"
-              title="Shortcut rebinding is coming soon"
-            >
-              Change
-            </button>
-          </div>
-        ))}
-      </div>
+      {captureError && (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg border-2 border-black bg-[#ff3b30] px-3 py-2 text-xs font-black text-white"
+        >
+          {captureError}
+        </p>
+      )}
 
-      <p className="mt-3 text-[11px] font-semibold leading-relaxed text-black/50">
-        These controls show the current defaults only. They do not change keyboard behavior.
-      </p>
+      <div className="mt-4 space-y-3">
+        {rows.map(row => {
+          const isCapturing = capturingFor === row.id;
+          const combo =
+            hotkeys?.[row.id === 'global' ? 'globalHoldToTalk' : 'inWindowHoldToTalk'];
+          return (
+            <div
+              key={row.id}
+              className={`flex flex-col gap-3 rounded-xl border-[3px] border-black p-3 sm:flex-row sm:items-center ${
+                isCapturing ? 'bg-[#ffde00]' : 'bg-white'
+              }`}
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-black">{row.label}</p>
+                <p className="mt-0.5 text-[11px] font-semibold text-black/50">
+                  {row.description}
+                </p>
+              </div>
+              <div
+                className="flex min-h-11 flex-wrap items-center gap-1.5"
+                aria-label={combo ? describeCombo(combo) : 'Loading shortcut'}
+              >
+                {combo ? (
+                  [
+                    ...combo.modifiers.map(modifier => (
+                      <kbd
+                        key={modifier}
+                        className="min-w-12 rounded-lg border-2 border-black bg-[#fff8d6] px-3 py-2 text-center font-mono text-xs font-black shadow-[2px_2px_0_#000]"
+                      >
+                        {modifierLabel(modifier)}
+                      </kbd>
+                    )),
+                    ...(combo.key === undefined
+                      ? []
+                      : [
+                          <kbd
+                            key="key"
+                            className="min-w-12 rounded-lg border-2 border-black bg-[#fff8d6] px-3 py-2 text-center font-mono text-xs font-black shadow-[2px_2px_0_#000]"
+                          >
+                            {keyLabel(combo.key)}
+                          </kbd>
+                        ])
+                  ]
+                ) : (
+                  <span className="text-[11px] font-bold text-black/40">Loading...</span>
+                )}
+              </div>
+              {isCapturing ? (
+                <button
+                  type="button"
+                  onClick={cancelCapture}
+                  className="flex items-center justify-center gap-1.5 rounded-lg border-2 border-black bg-white px-3 py-2 text-xs font-black neo-press"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setCapturingFor(row.id)}
+                  disabled={!hotkeys || capturingFor !== null || saving}
+                  className="rounded-lg border-2 border-black bg-[#ffde00] px-3 py-2 text-xs font-black neo-press disabled:opacity-45"
+                >
+                  Change
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

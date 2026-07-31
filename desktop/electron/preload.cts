@@ -17,6 +17,15 @@ type InsertTextResult =
 type BeginTextInsertionResult =
   | { status: 'ready'; sessionId: string }
   | { status: 'unavailable'; reason: string };
+type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
+type HotkeyCombo = { modifiers: HotkeyModifier[]; key?: string };
+type HotkeySettings = {
+  globalHoldToTalk: HotkeyCombo;
+  inWindowHoldToTalk: HotkeyCombo;
+};
+type UpdateHotkeysResult =
+  | { status: 'ok'; settings: HotkeySettings }
+  | { status: 'failed'; reason: string };
 
 const CHANNELS = {
   getSnapshot: 'runtime:get-snapshot',
@@ -26,7 +35,9 @@ const CHANNELS = {
   pillHover: 'pill:hover',
   pillStatus: 'pill:status',
   beginTextInsertion: 'insertion:begin',
-  insertTextAtCaret: 'insertion:insert-at-caret'
+  insertTextAtCaret: 'insertion:insert-at-caret',
+  getHotkeys: 'hotkeys:get',
+  updateHotkeys: 'hotkeys:update'
 } as const;
 
 contextBridge.exposeInMainWorld('resonanceDesktop', {
@@ -66,5 +77,8 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
       CHANNELS.insertTextAtCaret,
       sessionId,
       text
-    ) as Promise<InsertTextResult>
+    ) as Promise<InsertTextResult>,
+  getHotkeys: () => ipcRenderer.invoke(CHANNELS.getHotkeys) as Promise<HotkeySettings>,
+  updateHotkeys: (settings: HotkeySettings) =>
+    ipcRenderer.invoke(CHANNELS.updateHotkeys, settings) as Promise<UpdateHotkeysResult>
 });

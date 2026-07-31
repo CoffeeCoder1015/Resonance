@@ -1,9 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { AvatarCanvas } from './components/AvatarCanvas';
 import { TranscriptLog } from './components/TranscriptLog';
 import { MinimalControlBar } from './components/MinimalControlBar';
 import { DESIGN_VARIANTS, VoicePhase } from './types/voice';
+import type { HotkeySettings, UpdateHotkeysResult } from './types/desktop';
+import {
+  eventIsComboMemberKeyUp,
+  eventMatchesCombo
+} from './services/hotkeys';
 
 function getStatusDescription(phase: VoicePhase) {
   switch (phase) {
@@ -42,6 +47,31 @@ export function App() {
     selectTheme,
     stopAgentSpeech
   } = useVoiceAgent();
+  const [hotkeys, setHotkeys] = useState<HotkeySettings | null>(null);
+  useEffect(() => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return;
+    let disposed = false;
+    void bridge.getHotkeys().then(settings => {
+      if (!disposed) setHotkeys(settings);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const updateHotkeys = async (
+    next: HotkeySettings
+  ): Promise<UpdateHotkeysResult> => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) {
+      return { status: 'failed', reason: 'Desktop integration is unavailable.' };
+    }
+    const result = await bridge.updateHotkeys(next);
+    if (result.status === 'ok') setHotkeys(result.settings);
+    return result;
+  };
+
   useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
@@ -52,16 +82,15 @@ export function App() {
   }, [visualTheme]);
 
   useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) =>
+      target instanceof HTMLElement &&
+      Boolean(
+        target.closest('input, textarea, button, select, a, [contenteditable="true"]')
+      );
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target;
-      if (
-        e.repeat ||
-        (target instanceof HTMLElement &&
-          Boolean(target.closest('input, textarea, button, select, a, [contenteditable="true"]')))
-      ) {
-        return;
-      }
-      if (e.code === 'Space') {
+      if (e.repeat || isEditableTarget(e.target)) return;
+      if (hotkeys && eventMatchesCombo(e, hotkeys.inWindowHoldToTalk)) {
         e.preventDefault();
         void beginHoldToTalk();
       } else if (e.key === 'Escape') {
@@ -70,15 +99,11 @@ export function App() {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      const target = e.target;
-      if (
-        !(target instanceof HTMLElement) ||
-        !target.closest('input, textarea, button, select, a, [contenteditable="true"]')
-      ) {
+      if (isEditableTarget(e.target)) return;
+      if (hotkeys && eventIsComboMemberKeyUp(e, hotkeys.inWindowHoldToTalk)) {
         e.preventDefault();
+        void endHoldToTalk();
       }
-      void endHoldToTalk();
     };
 
     const handleWindowBlur = () => {
@@ -101,7 +126,7 @@ export function App() {
       window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [beginHoldToTalk, endHoldToTalk, stopAgentSpeech]);
+  }, [beginHoldToTalk, endHoldToTalk, hotkeys, stopAgentSpeech]);
 
   const statusInfo = getStatusDescription(phase);
   const activeVariant = DESIGN_VARIANTS.find(v => v.id === visualTheme) || DESIGN_VARIANTS[0];
@@ -166,6 +191,8 @@ export function App() {
         frequencies={audioFrequencies}
         speechOutputEnabled={speechOutputEnabled}
         agentModeEnabled={agentModeEnabled}
+        hotkeys={hotkeys}
+        onUpdateHotkeys={updateHotkeys}
         onToggleListen={toggleListening}
         onSubmitTextTurn={submitTextTurn}
         onToggleSpeechOutput={toggleSpeechOutput}
