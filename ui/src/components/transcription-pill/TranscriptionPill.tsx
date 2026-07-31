@@ -161,7 +161,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
           className={cn(
             'relative z-10 flex select-none items-center rounded-full',
             isCompact
-              ? 'gap-0 border-[3px] border-black bg-white p-1.5 opacity-[0.55]'
+              ? 'gap-0 border-[3px] border-black bg-white p-1.5 opacity-[0.45]'
               : 'gap-3 border-[3px] border-black bg-white py-1.5 pl-1.5 pr-3 opacity-100'
           )}
           style={{
