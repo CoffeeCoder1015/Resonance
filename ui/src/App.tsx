@@ -1,9 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { AvatarCanvas } from './components/AvatarCanvas';
 import { TranscriptLog } from './components/TranscriptLog';
 import { MinimalControlBar } from './components/MinimalControlBar';
 import { DESIGN_VARIANTS, VoicePhase } from './types/voice';
+import { voicePhaseToPillStatus } from './components/transcription-pill/pillPresentation';
 
 function getStatusDescription(phase: VoicePhase) {
   switch (phase) {
@@ -42,6 +43,71 @@ export function App() {
     selectTheme,
     stopAgentSpeech
   } = useVoiceAgent();
+  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
+  const audioPublishRef = useRef({ active: false, lastSentAt: 0 });
+
+  useEffect(() => {
+    if (phase !== 'listening') {
+      setRecordingElapsedSeconds(0);
+      return;
+    }
+    const timer = window.setInterval(
+      () => setRecordingElapsedSeconds(value => value + 1),
+      1000
+    );
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return;
+
+    bridge.publishSnapshot({
+      phase,
+      pillStatus: voicePhaseToPillStatus(phase),
+      elapsedSeconds: recordingElapsedSeconds,
+      visualTheme
+    });
+  }, [phase, recordingElapsedSeconds, visualTheme]);
+
+  useEffect(() => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return;
+
+    const active = phase === 'acquiring-microphone' || phase === 'listening';
+    if (!active) {
+      if (audioPublishRef.current.active) {
+        bridge.publishAudioLevel({ active: false, level: 0 });
+        audioPublishRef.current = { active: false, lastSentAt: 0 };
+      }
+      return;
+    }
+
+    const now = performance.now();
+    const shouldPublish =
+      !audioPublishRef.current.active ||
+      now - audioPublishRef.current.lastSentAt >= 50;
+    if (!shouldPublish) return;
+
+    bridge.publishAudioLevel({
+      active: true,
+      level:
+        phase === 'listening'
+          ? Math.max(0, Math.min(1, currentSpeechVolume))
+          : 0
+    });
+    audioPublishRef.current = { active: true, lastSentAt: now };
+  }, [currentSpeechVolume, phase]);
+
+  useEffect(() => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return;
+    return bridge.subscribeCommand(command => {
+      if (command === 'toggle-recording') void toggleListening();
+      if (command === 'begin-hold-to-talk') void beginHoldToTalk();
+      if (command === 'end-hold-to-talk') void endHoldToTalk();
+    });
+  }, [beginHoldToTalk, endHoldToTalk, toggleListening]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

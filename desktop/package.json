@@ -1,0 +1,47 @@
+{
+  "name": "resonance-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "out/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "dist:win": "npm run build && electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "typescript": "5.9.3"
+  },
+  "build": {
+    "appId": "com.resonance.desktop",
+    "productName": "Resonance",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../ui/dist",
+        "to": "app/ui/dist"
+      },
+      {
+        "from": "../ui/dist-pill",
+        "to": "app/ui/dist-pill"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "dependencies": {
+    "uiohook-napi": "1.5.5"
+  }
+}
