@@ -8,7 +8,6 @@ const STATUSES: PillStatus[] = [
   'idle',
   'recording',
   'processing',
-  'success',
   'error'
 ];
 const DEFAULT_THEME: VisualTheme = 'clay-blob';

@@ -10,7 +10,6 @@ export type PillStatus =
   | 'idle'
   | 'recording'
   | 'processing'
-  | 'success'
   | 'error';
 
 export interface RuntimeSnapshot {

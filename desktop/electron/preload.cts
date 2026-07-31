@@ -9,7 +9,7 @@ type RuntimeCommand =
   | 'show-expanded';
 type RuntimeSnapshot = {
   phase: string;
-  pillStatus: 'idle' | 'recording' | 'processing' | 'success' | 'error';
+  pillStatus: 'idle' | 'recording' | 'processing' | 'error';
   elapsedSeconds: number;
   visualTheme: string;
 };

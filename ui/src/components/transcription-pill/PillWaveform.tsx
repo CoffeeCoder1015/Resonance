@@ -104,11 +104,9 @@ export const PillWaveform = memo(function PillWaveform({
       ? 'bg-[#FF3D7F]'
       : status === 'processing'
         ? 'bg-[#7C5CFF]'
-        : status === 'success'
-          ? 'bg-[#00C853]'
-          : status === 'error'
-            ? 'bg-[#FF453A]'
-            : 'bg-black';
+        : status === 'error'
+          ? 'bg-[#FF453A]'
+          : 'bg-black';
 
   return (
     <div className="relative flex h-7 w-16 items-center justify-center">

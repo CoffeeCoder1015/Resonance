@@ -4,7 +4,6 @@ export type PillStatus =
   | 'idle'
   | 'recording'
   | 'processing'
-  | 'success'
   | 'error';
 
 export interface PillPresentation {
@@ -32,12 +31,6 @@ const PRESENTATIONS: Record<PillStatus, PillPresentation> = {
     label: 'Processing',
     accent: '#7C5CFF',
     animated: true
-  },
-  success: {
-    status: 'success',
-    label: 'Done',
-    accent: '#00C853',
-    animated: false
   },
   error: {
     status: 'error',

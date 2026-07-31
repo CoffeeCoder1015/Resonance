@@ -54,7 +54,6 @@ function PrimaryIcon({ status }: { status: PillStatus }) {
       </svg>
     );
   }
-  if (status === 'success') return <span aria-hidden="true">✓</span>;
   if (status === 'error') return <span aria-hidden="true">!</span>;
   return <MicrophoneIcon />;
 }

@@ -110,11 +110,11 @@ export function useVoiceAgent() {
     ]);
   }, []);
 
-  const setTerminalPillStatus = useCallback((status: 'success' | 'error') => {
+  const showPillError = useCallback(() => {
     if (pillStatusTimerRef.current !== null) {
       window.clearTimeout(pillStatusTimerRef.current);
     }
-    setTranscriptionPillStatus(status);
+    setTranscriptionPillStatus('error');
     pillStatusTimerRef.current = window.setTimeout(() => {
       pillStatusTimerRef.current = null;
       setTranscriptionPillStatus('idle');
@@ -266,6 +266,7 @@ export function useVoiceAgent() {
           setPhase('responding');
           const completedTurn = await waitForTurn(turn.id, abortController.signal);
           if (generation !== turnGenerationRef.current) return;
+          setTranscriptionPillStatus('idle');
           const sessionId = insertionSessionRef.current;
           insertionSessionRef.current = null;
           const bridge = window.resonanceDesktop;
@@ -279,7 +280,6 @@ export function useVoiceAgent() {
           if (insertion.status !== 'inserted') {
             throw new Error(insertion.reason || 'Text could not be inserted at the caret.');
           }
-          setTerminalPillStatus('success');
           settleTurn(generation);
         }
       } catch (error) {
@@ -287,7 +287,7 @@ export function useVoiceAgent() {
 
         console.error('Voice turn failed.', error);
         if (pipelineMode === 'transcription') {
-          setTerminalPillStatus('error');
+          showPillError();
         } else {
           appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
         }
@@ -302,7 +302,7 @@ export function useVoiceAgent() {
       appendTurn,
       receiveAgentResponse,
       setPhase,
-      setTerminalPillStatus,
+      showPillError,
       settleTurn
     ]
   );
@@ -354,7 +354,7 @@ export function useVoiceAgent() {
         await capture.dispose();
         console.error('Recording failed.', error);
         if (pipelineMode === 'transcription') {
-          setTerminalPillStatus('error');
+          showPillError();
         } else {
           appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
         }
@@ -369,7 +369,7 @@ export function useVoiceAgent() {
       appendTurn,
       setAgentMode,
       setPhase,
-      setTerminalPillStatus,
+      showPillError,
       settleTurn,
       transcribeRecording
     ]
@@ -394,7 +394,7 @@ export function useVoiceAgent() {
         if (pipelineMode === 'transcription') {
           const bridge = window.resonanceDesktop;
           if (!bridge) {
-            setTerminalPillStatus('error');
+            showPillError();
             activeInputModeRef.current = null;
             activePipelineModeRef.current = null;
             return;
@@ -403,7 +403,7 @@ export function useVoiceAgent() {
             insertionSessionRef.current = await bridge.beginTextInsertion();
           } catch (error) {
             console.error('The transcription target could not be captured.', error);
-            setTerminalPillStatus('error');
+            showPillError();
             activeInputModeRef.current = null;
             activePipelineModeRef.current = null;
             return;
@@ -426,7 +426,7 @@ export function useVoiceAgent() {
           activePipelineModeRef.current = null;
           setAgentMode(false);
           if (pipelineMode === 'transcription') {
-            setTerminalPillStatus('error');
+            showPillError();
           } else {
             appendTurn('agent', 'Microphone access is unavailable.');
           }
@@ -465,7 +465,7 @@ export function useVoiceAgent() {
           console.error('Recording failed.', error);
           setAgentMode(false);
           if (pipelineMode === 'transcription') {
-            setTerminalPillStatus('error');
+            showPillError();
           } else {
             appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
           }
@@ -506,7 +506,7 @@ export function useVoiceAgent() {
       prepareForTurn,
       setAgentMode,
       setPhase,
-      setTerminalPillStatus
+      showPillError
     ]
   );
 

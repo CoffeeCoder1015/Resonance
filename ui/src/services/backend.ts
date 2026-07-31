@@ -33,7 +33,7 @@ export interface ASRProviderSettings {
 
 export type PipelineMode = 'agent' | 'transcription';
 
-const TURN_POLL_INTERVAL_MS = 750;
+const TURN_POLL_INTERVAL_MS = 100;
 
 async function requestJson<T>(pathname: string, options?: RequestInit): Promise<T> {
   const response = await fetch(pathname, options);
