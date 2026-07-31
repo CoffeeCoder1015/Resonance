@@ -48,6 +48,7 @@ let quitting = false;
 let snapshot: RuntimeSnapshot = DEFAULT_SNAPSHOT;
 let pillHovered = false;
 let pillHoverTimer: NodeJS.Timeout | null = null;
+let pillIgnoresMouseEvents = false;
 
 const IDLE_PILL_HIT_WIDTH = 48;
 const IDLE_PILL_HIT_HEIGHT = 48;
@@ -161,6 +162,12 @@ function setPillHovered(hovered: boolean) {
   pillWindow?.webContents.send(CHANNELS.pillHover, hovered);
 }
 
+function setPillIgnoresMouseEvents(ignoresMouseEvents: boolean) {
+  if (!pillWindow || pillIgnoresMouseEvents === ignoresMouseEvents) return;
+  pillIgnoresMouseEvents = ignoresMouseEvents;
+  pillWindow.setIgnoreMouseEvents(ignoresMouseEvents, { forward: true });
+}
+
 function startPillHoverTracking() {
   if (pillHoverTimer) clearInterval(pillHoverTimer);
   pillHoverTimer = setInterval(() => {
@@ -192,6 +199,7 @@ function startPillHoverTracking() {
       cursor.y >= interactionTop &&
       cursor.y < interactionTop + interactionHeight;
 
+    setPillIgnoresMouseEvents(!insideInteractionBounds);
     setPillHovered(insideInteractionBounds);
   }, 50);
 }
