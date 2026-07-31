@@ -31,15 +31,7 @@ export interface ASRProviderSettings {
   providers: ASRProviderOption[];
 }
 
-export interface ModeOption {
-  id: string;
-  label: string;
-}
-
-export interface ModeSettings {
-  current: string;
-  modes: ModeOption[];
-}
+export type PipelineMode = 'agent' | 'transcription';
 
 const TURN_POLL_INTERVAL_MS = 750;
 
@@ -82,8 +74,12 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-export function createVoiceTurn(audio: Blob, signal?: AbortSignal): Promise<Turn> {
-  return requestJson<Turn>('/api/voice/turns', {
+export function createVoiceTurn(
+  audio: Blob,
+  mode: PipelineMode,
+  signal?: AbortSignal
+): Promise<Turn> {
+  return requestJson<Turn>(`/api/voice/turns?mode=${encodeURIComponent(mode)}`, {
     method: 'POST',
     headers: {
       'Content-Type': audio.type || 'application/octet-stream'
@@ -93,11 +89,15 @@ export function createVoiceTurn(audio: Blob, signal?: AbortSignal): Promise<Turn
   });
 }
 
-export function createTextTurn(text: string, signal?: AbortSignal): Promise<Turn> {
+export function createTextTurn(
+  text: string,
+  mode: PipelineMode,
+  signal?: AbortSignal
+): Promise<Turn> {
   return requestJson<Turn>('/api/text/turns', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, mode }),
     signal
   });
 }
@@ -148,17 +148,4 @@ export async function selectASRProvider(provider: string): Promise<string> {
     body: JSON.stringify({ provider })
   });
   return result.provider;
-}
-
-export function getModeSettings(signal?: AbortSignal): Promise<ModeSettings> {
-  return requestJson<ModeSettings>('/api/modes', { signal });
-}
-
-export async function selectMode(mode: string): Promise<string> {
-  const result = await requestJson<{ mode: string }>('/api/modes/current', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode })
-  });
-  return result.mode;
 }

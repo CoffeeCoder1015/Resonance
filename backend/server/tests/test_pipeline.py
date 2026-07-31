@@ -14,7 +14,6 @@ class PipelineTests(unittest.TestCase):
         return_value={
             "response_provider": "passthrough",
             "asr_provider": "whisper",
-            "mode": "transcription",
         },
     )
     def test_voice_turn_is_asr_then_response_provider(
@@ -30,6 +29,7 @@ class PipelineTests(unittest.TestCase):
             background_tasks,
             response,
             upload,
+            "transcription",
         )
 
         transcribe.assert_called_once_with(upload)
@@ -64,13 +64,33 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(app_module.turns[turn_id]["response"], "ASR text")
         del app_module.turns[turn_id]
 
+    def test_pipeline_mode_belongs_to_each_turn(self) -> None:
+        background_tasks = BackgroundTasks()
+
+        transcription = app_module.create_turn(
+            "Dictated text",
+            background_tasks,
+            "passthrough",
+            "transcription",
+        )
+        agent = app_module.create_turn(
+            "Question",
+            background_tasks,
+            "passthrough",
+            "agent",
+        )
+
+        self.assertEqual(transcription["mode"], "transcription")
+        self.assertEqual(agent["mode"], "agent")
+        del app_module.turns[transcription["id"]]
+        del app_module.turns[agent["id"]]
+
     @patch.object(
         app_module,
         "load_settings",
         return_value={
             "response_provider": "passthrough",
             "asr_provider": "whisper",
-            "mode": "voice",
         },
     )
     def test_text_turn_uses_the_response_provider(
@@ -79,12 +99,13 @@ class PipelineTests(unittest.TestCase):
     ) -> None:
         background_tasks = BackgroundTasks()
         response = Response()
-        request = app_module.TextTurn(text="Typed text")
+        request = app_module.TextTurn(text="Typed text", mode="agent")
 
         turn = app_module.create_text_turn(request, background_tasks, response)
 
         self.assertEqual(turn["transcript"], "Typed text")
         self.assertEqual(turn["response_provider"], "passthrough")
+        self.assertEqual(turn["mode"], "agent")
         self.assertEqual(len(background_tasks.tasks), 1)
         self.assertIs(background_tasks.tasks[0].func, app_module.run_response_stage)
 

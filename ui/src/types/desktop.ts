@@ -14,7 +14,9 @@ export interface DesktopAudioLevel {
 }
 
 export type DesktopRuntimeCommand =
-  | 'toggle-recording'
+  | 'toggle-transcription'
+  | 'begin-transcription'
+  | 'end-transcription'
   | 'begin-hold-to-talk'
   | 'end-hold-to-talk'
   | 'show-expanded';
@@ -29,6 +31,11 @@ export interface ResonanceDesktopBridge {
   sendCommand(command: DesktopRuntimeCommand): void;
   subscribeCommand(listener: (command: DesktopRuntimeCommand) => void): () => void;
   subscribePillHover(listener: (hovered: boolean) => void): () => void;
+  beginTextInsertion(): Promise<string>;
+  insertTextAtCaret(
+    sessionId: string,
+    text: string
+  ): Promise<{ status: 'inserted' | 'failed'; reason?: string }>;
 }
 
 declare global {

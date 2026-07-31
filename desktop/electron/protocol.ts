@@ -25,9 +25,11 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-async function proxyBackend(request: Request, pathname: string): Promise<Response> {
+async function proxyBackend(request: Request, url: URL): Promise<Response> {
+  const pathname = url.pathname;
   const backendOrigin = process.env.RESONANCE_BACKEND_ORIGIN || 'http://127.0.0.1:8000';
-  const backendPath = `${BACKEND_PREFIX}${pathname.slice(API_PREFIX.length)}`;
+  const backendPath =
+    `${BACKEND_PREFIX}${pathname.slice(API_PREFIX.length)}` + url.search;
   const headers = new Headers(request.headers);
   let body: BodyInit | undefined;
 
@@ -100,7 +102,7 @@ export function installAppProtocol(mainRoot: string, pillRoot: string) {
   protocol.handle('resonance', async request => {
     const url = new URL(request.url);
     if (url.host !== 'app') return new Response('Not found.', { status: 404 });
-    if (url.pathname.startsWith(API_PREFIX)) return proxyBackend(request, url.pathname);
+    if (url.pathname.startsWith(API_PREFIX)) return proxyBackend(request, url);
 
     const assetPath = resolveAsset(decodeURIComponent(url.pathname), mainRoot, pillRoot);
     if (!assetPath) return new Response('Not found.', { status: 404 });

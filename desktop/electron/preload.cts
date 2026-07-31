@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 type RuntimeCommand =
-  | 'toggle-recording'
+  | 'toggle-transcription'
+  | 'begin-transcription'
+  | 'end-transcription'
   | 'begin-hold-to-talk'
   | 'end-hold-to-talk'
   | 'show-expanded';
@@ -15,6 +17,9 @@ type AudioLevel = {
   active: boolean;
   level: number;
 };
+type InsertTextResult =
+  | { status: 'inserted' }
+  | { status: 'failed'; reason: string };
 
 const CHANNELS = {
   getSnapshot: 'runtime:get-snapshot',
@@ -22,7 +27,9 @@ const CHANNELS = {
   snapshot: 'runtime:snapshot',
   audioLevel: 'runtime:audio-level',
   command: 'runtime:command',
-  pillHover: 'pill:hover'
+  pillHover: 'pill:hover',
+  beginTextInsertion: 'insertion:begin',
+  insertTextAtCaret: 'insertion:insert-at-caret'
 } as const;
 
 contextBridge.exposeInMainWorld('resonanceDesktop', {
@@ -60,5 +67,13 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
       listener(hovered);
     ipcRenderer.on(CHANNELS.pillHover, handler);
     return () => ipcRenderer.removeListener(CHANNELS.pillHover, handler);
-  }
+  },
+  beginTextInsertion: () =>
+    ipcRenderer.invoke(CHANNELS.beginTextInsertion) as Promise<string>,
+  insertTextAtCaret: (sessionId: string, text: string) =>
+    ipcRenderer.invoke(
+      CHANNELS.insertTextAtCaret,
+      sessionId,
+      text
+    ) as Promise<InsertTextResult>
 });

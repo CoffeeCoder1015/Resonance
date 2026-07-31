@@ -4,7 +4,6 @@ import { AvatarCanvas } from './components/AvatarCanvas';
 import { TranscriptLog } from './components/TranscriptLog';
 import { MinimalControlBar } from './components/MinimalControlBar';
 import { DESIGN_VARIANTS, VoicePhase } from './types/voice';
-import { voicePhaseToPillStatus } from './components/transcription-pill/pillPresentation';
 
 function getStatusDescription(phase: VoicePhase) {
   switch (phase) {
@@ -33,11 +32,14 @@ export function App() {
     agentModeEnabled,
     currentSpeechVolume,
     audioFrequencies,
+    transcriptionPillStatus,
     toggleListening,
     beginHoldToTalk,
     endHoldToTalk,
     enableAgentMode,
     disableAgentMode,
+    toggleTranscription,
+    beginTranscription,
     submitTextTurn,
     toggleSpeechOutput,
     selectTheme,
@@ -47,7 +49,7 @@ export function App() {
   const audioPublishRef = useRef({ active: false, lastSentAt: 0 });
 
   useEffect(() => {
-    if (phase !== 'listening') {
+    if (transcriptionPillStatus !== 'recording') {
       setRecordingElapsedSeconds(0);
       return;
     }
@@ -56,7 +58,7 @@ export function App() {
       1000
     );
     return () => window.clearInterval(timer);
-  }, [phase]);
+  }, [transcriptionPillStatus]);
 
   useEffect(() => {
     const bridge = window.resonanceDesktop;
@@ -64,17 +66,17 @@ export function App() {
 
     bridge.publishSnapshot({
       phase,
-      pillStatus: voicePhaseToPillStatus(phase),
+      pillStatus: transcriptionPillStatus,
       elapsedSeconds: recordingElapsedSeconds,
       visualTheme
     });
-  }, [phase, recordingElapsedSeconds, visualTheme]);
+  }, [phase, recordingElapsedSeconds, transcriptionPillStatus, visualTheme]);
 
   useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
 
-    const active = phase === 'acquiring-microphone' || phase === 'listening';
+    const active = transcriptionPillStatus === 'recording';
     if (!active) {
       if (audioPublishRef.current.active) {
         bridge.publishAudioLevel({ active: false, level: 0 });
@@ -92,22 +94,29 @@ export function App() {
     bridge.publishAudioLevel({
       active: true,
       level:
-        phase === 'listening'
+        active
           ? Math.max(0, Math.min(1, currentSpeechVolume))
           : 0
     });
     audioPublishRef.current = { active: true, lastSentAt: now };
-  }, [currentSpeechVolume, phase]);
+  }, [currentSpeechVolume, transcriptionPillStatus]);
 
   useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
     return bridge.subscribeCommand(command => {
-      if (command === 'toggle-recording') void toggleListening();
+      if (command === 'toggle-transcription') void toggleTranscription();
+      if (command === 'begin-transcription') void beginTranscription();
+      if (command === 'end-transcription') void endHoldToTalk();
       if (command === 'begin-hold-to-talk') void beginHoldToTalk();
       if (command === 'end-hold-to-talk') void endHoldToTalk();
     });
-  }, [beginHoldToTalk, endHoldToTalk, toggleListening]);
+  }, [
+    beginHoldToTalk,
+    beginTranscription,
+    endHoldToTalk,
+    toggleTranscription
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

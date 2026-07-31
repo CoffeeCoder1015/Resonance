@@ -6,8 +6,6 @@ const RESPONSE_PROVIDERS_ROUTE = '/api/response/providers';
 const CURRENT_RESPONSE_PROVIDER_ROUTE = '/api/response/providers/current';
 const ASR_PROVIDERS_ROUTE = '/api/asr/providers';
 const CURRENT_ASR_PROVIDER_ROUTE = '/api/asr/providers/current';
-const MODES_ROUTE = '/api/modes';
-const CURRENT_MODE_ROUTE = '/api/modes/current';
 const TURN_ROUTE = /^\/api\/turns\/([^/]+)$/;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
@@ -93,13 +91,6 @@ function routeRequest(pathname, method) {
   if (pathname === CURRENT_ASR_PROVIDER_ROUTE) {
     return method === 'PUT' ? 'setASRProvider' : 'methodNotAllowed';
   }
-  if (pathname === MODES_ROUTE) {
-    return method === 'GET' ? 'getModes' : 'methodNotAllowed';
-  }
-  if (pathname === CURRENT_MODE_ROUTE) {
-    return method === 'PUT' ? 'setMode' : 'methodNotAllowed';
-  }
-
   const turnMatch = pathname.match(TURN_ROUTE);
   if (turnMatch) {
     return method === 'GET' ? { name: 'getTurn', turnId: turnMatch[1] } : 'methodNotAllowed';
@@ -113,7 +104,8 @@ export function createBackendMiddleware({
   timeoutMs = Number(process.env.BACKEND_TIMEOUT_MS) || DEFAULT_BACKEND_TIMEOUT_MS
 } = {}) {
   return async function backendMiddleware(request, response, next) {
-    const pathname = new URL(request.url || '/', 'http://resonance.local').pathname;
+    const requestUrl = new URL(request.url || '/', 'http://resonance.local');
+    const pathname = requestUrl.pathname;
     const route = routeRequest(pathname, request.method || 'GET');
     if (route === null) {
       next();
@@ -143,6 +135,10 @@ export function createBackendMiddleware({
     try {
       let result;
       if (route === 'createVoiceTurn') {
+        const mode = requestUrl.searchParams.get('mode');
+        if (mode !== 'agent' && mode !== 'transcription') {
+          throw createHttpError('A valid pipeline mode is required.', 422);
+        }
         const contentType = String(request.headers['content-type'] || '');
         if (!contentType.toLowerCase().startsWith('audio/')) {
           throw createHttpError('An audio content type is required.', 415);
@@ -151,12 +147,14 @@ export function createBackendMiddleware({
           audio: await readBody(request, MAX_AUDIO_BYTES),
           contentType,
           filename: getFilename(contentType),
+          mode,
           signal: abortController.signal
         });
       } else if (route === 'createTextTurn') {
         const body = await readJson(request);
         result = await client.createTextTurn({
           text: body.text,
+          mode: body.mode,
           signal: abortController.signal
         });
       } else if (route === 'getResponseProviders') {
@@ -173,14 +171,6 @@ export function createBackendMiddleware({
         const body = await readJson(request);
         result = await client.setASRProvider({
           provider: body.provider,
-          signal: abortController.signal
-        });
-      } else if (route === 'getModes') {
-        result = await client.getModes({ signal: abortController.signal });
-      } else if (route === 'setMode') {
-        const body = await readJson(request);
-        result = await client.setMode({
-          mode: body.mode,
           signal: abortController.signal
         });
       } else {

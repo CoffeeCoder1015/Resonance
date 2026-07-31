@@ -31,21 +31,21 @@ export function createBackendClient({
   };
 
   return {
-    async createVoiceTurn({ audio, contentType, filename, signal }) {
+    async createVoiceTurn({ audio, contentType, filename, mode, signal }) {
       const form = new FormData();
       form.append('file', new Blob([audio], { type: contentType }), filename);
-      return request('/v1/voice/turns', {
+      return request(`/v1/voice/turns?mode=${encodeURIComponent(mode)}`, {
         method: 'POST',
         body: form,
         signal
       });
     },
 
-    createTextTurn({ text, signal }) {
+    createTextTurn({ text, mode, signal }) {
       return request('/v1/text/turns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, mode }),
         signal
       });
     },
@@ -76,19 +76,6 @@ export function createBackendClient({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider }),
-        signal
-      });
-    },
-
-    getModes({ signal }) {
-      return request('/v1/modes', { signal });
-    },
-
-    setMode({ mode, signal }) {
-      return request('/v1/modes/current', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode }),
         signal
       });
     }

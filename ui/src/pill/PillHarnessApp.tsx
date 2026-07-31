@@ -89,7 +89,7 @@ function ElectronPillRenderer() {
         visualTheme={snapshot.visualTheme}
         microphoneLevel={microphoneLevel}
         hovered={hovered}
-        onPrimaryAction={() => bridge.sendCommand('toggle-recording')}
+        onPrimaryAction={() => bridge.sendCommand('toggle-transcription')}
         onExpand={() => bridge.sendCommand('show-expanded')}
       />
     </PillStage>

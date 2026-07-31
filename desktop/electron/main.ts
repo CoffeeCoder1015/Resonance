@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -16,6 +17,7 @@ import {
   CHANNELS,
   DEFAULT_SNAPSHOT,
   type AudioLevel,
+  type InsertTextResult,
   type RuntimeCommand,
   type RuntimeSnapshot
 } from './contract.js';
@@ -26,6 +28,11 @@ import {
   positionPill,
   preloadPath
 } from './windows.js';
+import {
+  getForegroundTarget,
+  insertUnicodeText,
+  type ForegroundTarget
+} from './windows-text-insertion.js';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -49,6 +56,7 @@ let snapshot: RuntimeSnapshot = DEFAULT_SNAPSHOT;
 let pillHovered = false;
 let pillHoverTimer: NodeJS.Timeout | null = null;
 let pillIgnoresMouseEvents = false;
+const insertionTargets = new Map<string, StoredInsertionTarget>();
 
 const IDLE_PILL_HIT_WIDTH = 48;
 const IDLE_PILL_HIT_HEIGHT = 48;
@@ -57,6 +65,100 @@ const ACTIVE_PILL_HIT_WIDTH = 280;
 const EXPANDED_PILL_HIT_HEIGHT = 56;
 const EXPANDED_PILL_CENTER_OFFSET_X = -26;
 let globalHoldActive = false;
+const INSERTION_SESSION_MAX_AGE_MS = 10 * 60_000;
+
+interface StoredInsertionTarget {
+  target: ForegroundTarget;
+  createdAt: number;
+}
+
+async function beginTextInsertion(): Promise<string> {
+  if (process.platform !== 'win32') {
+    throw new Error('Direct text insertion is currently supported on Windows only.');
+  }
+
+  const target = await getForegroundTarget();
+  if (!target) {
+    throw new Error('The active application could not be identified.');
+  }
+  if (target.processId === process.pid) {
+    throw new Error('Focus an external application before starting transcription.');
+  }
+
+  const sessionId = `insertion_${randomUUID()}`;
+  insertionTargets.clear();
+  insertionTargets.set(sessionId, {
+    target,
+    createdAt: Date.now()
+  });
+  return sessionId;
+}
+
+async function insertTextAtCaret(
+  sessionId: unknown,
+  text: unknown
+): Promise<InsertTextResult> {
+  if (typeof sessionId !== 'string') {
+    return { status: 'failed', reason: 'The insertion session is invalid.' };
+  }
+  if (typeof text !== 'string' || text.length === 0) {
+    return { status: 'failed', reason: 'There is no transcription text to insert.' };
+  }
+
+  const stored = insertionTargets.get(sessionId);
+  insertionTargets.delete(sessionId);
+  if (!stored) {
+    return {
+      status: 'failed',
+      reason: 'The insertion session expired or was already used.'
+    };
+  }
+  if (Date.now() - stored.createdAt > INSERTION_SESSION_MAX_AGE_MS) {
+    return { status: 'failed', reason: 'The insertion session expired.' };
+  }
+
+  try {
+    const foreground = await getForegroundTarget();
+    if (
+      !foreground ||
+      foreground.windowHandle !== stored.target.windowHandle ||
+      foreground.processId !== stored.target.processId
+    ) {
+      return {
+        status: 'failed',
+        reason: 'The active application changed before transcription completed.'
+      };
+    }
+
+    const result = await insertUnicodeText(stored.target, text);
+    if (result.status === 'inserted') return { status: 'inserted' };
+    if (result.status === 'target-changed') {
+      return {
+        status: 'failed',
+        reason: 'The active application changed immediately before insertion.'
+      };
+    }
+    if (result.status === 'partial') {
+      return {
+        status: 'failed',
+        reason: `Windows inserted only ${result.insertedCodeUnits} of ${text.length} UTF-16 code units.`
+      };
+    }
+    return {
+      status: 'failed',
+      reason:
+        result.nativeError === 0
+          ? 'Windows blocked text insertion, possibly because the target runs at a higher integrity level.'
+          : `Windows text insertion failed with error ${result.nativeError}.`
+    };
+  } catch (error) {
+    console.error('Direct text insertion failed.', error);
+    return {
+      status: 'failed',
+      reason: error instanceof Error ? error.message : 'Direct text insertion failed.'
+    };
+  }
+}
 
 interface PillPosition {
   x: number;
@@ -134,12 +236,12 @@ function installGlobalHotkey() {
       return;
     }
     globalHoldActive = true;
-    expandedWindow?.webContents.send(CHANNELS.command, 'begin-hold-to-talk');
+    expandedWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
   };
   const handleKeyUp = (event: UiohookKeyboardEvent) => {
     if (!globalHoldActive || !isHotkeyModifier(event.keycode)) return;
     globalHoldActive = false;
-    expandedWindow?.webContents.send(CHANNELS.command, 'end-hold-to-talk');
+    expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   };
 
   uIOhook.on('keydown', handleKeyDown);
@@ -151,7 +253,7 @@ function installGlobalHotkey() {
 function uninstallGlobalHotkey() {
   if (globalHoldActive) {
     globalHoldActive = false;
-    expandedWindow?.webContents.send(CHANNELS.command, 'end-hold-to-talk');
+      expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   }
   uIOhook.stop();
 }
@@ -235,6 +337,24 @@ async function createTray() {
 
 function installIpc() {
   ipcMain.handle(CHANNELS.getSnapshot, () => snapshot);
+  ipcMain.handle(CHANNELS.beginTextInsertion, event => {
+    if (event.sender !== expandedWindow?.webContents) {
+      throw new Error('Text insertion may only be started by the main renderer.');
+    }
+    return beginTextInsertion();
+  });
+  ipcMain.handle(
+    CHANNELS.insertTextAtCaret,
+    (event, sessionId: unknown, text: unknown) => {
+      if (event.sender !== expandedWindow?.webContents) {
+        return {
+          status: 'failed',
+          reason: 'Text insertion may only be requested by the main renderer.'
+        } satisfies InsertTextResult;
+      }
+      return insertTextAtCaret(sessionId, text);
+    }
+  );
   ipcMain.on(CHANNELS.publishSnapshot, (event, nextSnapshot: RuntimeSnapshot) => {
     if (event.sender !== expandedWindow?.webContents) return;
     snapshot = nextSnapshot;
@@ -349,6 +469,7 @@ if (!hasSingleInstanceLock) {
   app.on('second-instance', showExpanded);
   app.on('before-quit', () => {
     quitting = true;
+    insertionTargets.clear();
     if (pillHoverTimer) clearInterval(pillHoverTimer);
     uninstallGlobalHotkey();
   });

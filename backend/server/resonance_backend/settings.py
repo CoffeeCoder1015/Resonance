@@ -7,7 +7,6 @@ from threading import Lock
 
 DEFAULT_RESPONSE_PROVIDER = "opencode"
 DEFAULT_ASR_PROVIDER = "whisper"
-DEFAULT_MODE = "voice"
 CONFIG_PATH = Path(
     os.environ.get(
         "RESONANCE_CONFIG_PATH",
@@ -24,7 +23,6 @@ def load_settings(path: Path = CONFIG_PATH) -> dict[str, str]:
         return {
             "response_provider": DEFAULT_RESPONSE_PROVIDER,
             "asr_provider": DEFAULT_ASR_PROVIDER,
-            "mode": DEFAULT_MODE,
         }
     except (json.JSONDecodeError, OSError) as error:
         raise RuntimeError(f"Could not read config at {path}.") from error
@@ -37,18 +35,15 @@ def load_settings(path: Path = CONFIG_PATH) -> dict[str, str]:
         config.get("provider", DEFAULT_RESPONSE_PROVIDER),
     )
     asr_provider = config.get("asr_provider", DEFAULT_ASR_PROVIDER)
-    mode = config.get("mode", DEFAULT_MODE)
     if (
         not isinstance(response_provider, str)
         or not isinstance(asr_provider, str)
-        or not isinstance(mode, str)
     ):
         raise RuntimeError(f"Config at {path} is invalid.")
 
     return {
         "response_provider": response_provider,
         "asr_provider": asr_provider,
-        "mode": mode,
     }
 
 
@@ -93,15 +88,4 @@ def save_asr_provider(provider: str, path: Path = CONFIG_PATH) -> None:
     with CONFIG_LOCK:
         config = load_settings(path)
         config["asr_provider"] = provider
-        _save_config(config, path)
-
-
-def load_mode(path: Path = CONFIG_PATH) -> str:
-    return load_settings(path)["mode"]
-
-
-def save_mode(mode: str, path: Path = CONFIG_PATH) -> None:
-    with CONFIG_LOCK:
-        config = load_settings(path)
-        config["mode"] = mode
         _save_config(config, path)

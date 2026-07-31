@@ -53,7 +53,7 @@ test('aborts backend work when the client disconnects', async () => {
   };
   const origin = await startServer({ client, timeoutMs: 5_000 });
   const controller = new AbortController();
-  const request = fetch(`${origin}/api/voice/turns`, {
+  const request = fetch(`${origin}/api/voice/turns?mode=agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'audio/wav' },
     body: new Uint8Array([1, 2, 3]),
@@ -80,7 +80,7 @@ test('times out backend work and returns a gateway timeout', async () => {
   };
   const origin = await startServer({ client, timeoutMs: 20 });
 
-  const response = await fetch(`${origin}/api/voice/turns`, {
+  const response = await fetch(`${origin}/api/voice/turns?mode=agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'audio/wav' },
     body: new Uint8Array([1, 2, 3])
@@ -124,14 +124,14 @@ test('routes response provider reads and changes', async () => {
 test('routes keyboard text turns', async () => {
   const calls = [];
   const client = {
-    createTextTurn({ text }) {
-      calls.push(text);
+    createTextTurn({ text, mode }) {
+      calls.push({ text, mode });
       return {
         id: 'turn_text',
         status: 'responding',
         transcript: text,
         response_provider: 'opencode',
-        mode: 'voice'
+        mode
       };
     }
   };
@@ -140,12 +140,12 @@ test('routes keyboard text turns', async () => {
   const response = await fetch(`${origin}/api/text/turns`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: 'Hello' })
+    body: JSON.stringify({ text: 'Hello', mode: 'agent' })
   });
 
   assert.equal(response.status, 202);
   assert.equal(response.headers.get('location'), '/api/turns/turn_text');
-  assert.deepEqual(calls, ['Hello']);
+  assert.deepEqual(calls, [{ text: 'Hello', mode: 'agent' }]);
 });
 
 test('routes ASR provider reads and changes', async () => {
@@ -181,48 +181,39 @@ test('routes ASR provider reads and changes', async () => {
   assert.deepEqual(calls, ['whisper']);
 });
 
-test('routes mode reads and changes', async () => {
+test('returns an addressable voice turn', async () => {
   const calls = [];
   const client = {
-    getModes() {
-      return {
-        current: 'voice',
-        modes: [
-          { id: 'voice', label: 'Voice' },
-          { id: 'transcription', label: 'Transcription' }
-        ]
-      };
-    },
-    setMode({ mode }) {
+    createVoiceTurn({ mode }) {
       calls.push(mode);
-      return { mode };
-    }
-  };
-  const origin = await startServer({ client });
-
-  const listResponse = await fetch(`${origin}/api/modes`);
-  assert.equal(listResponse.status, 200);
-  assert.equal((await listResponse.json()).current, 'voice');
-
-  const changeResponse = await fetch(`${origin}/api/modes/current`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: 'transcription' })
-  });
-  assert.equal(changeResponse.status, 200);
-  assert.deepEqual(await changeResponse.json(), { mode: 'transcription' });
-  assert.deepEqual(calls, ['transcription']);
-});
-
-test('returns an addressable voice turn', async () => {
-  const client = {
-    createVoiceTurn() {
       return {
         id: 'turn_123',
         status: 'responding',
         transcript: 'Hello',
-        response_provider: 'opencode'
+        response_provider: 'opencode',
+        mode
       };
+    }
+  };
+  const origin = await startServer({ client });
+
+  const response = await fetch(`${origin}/api/voice/turns?mode=transcription`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/wav' },
+    body: new Uint8Array([1, 2, 3])
+  });
+
+  assert.equal(response.status, 202);
+  assert.equal(response.headers.get('location'), '/api/turns/turn_123');
+  assert.equal(response.headers.get('retry-after'), '1');
+  assert.equal((await response.json()).transcript, 'Hello');
+  assert.deepEqual(calls, ['transcription']);
+});
+
+test('requires voice pipeline mode on every request', async () => {
+  const client = {
+    createVoiceTurn() {
+      throw new Error('Backend client must not be called.');
     }
   };
   const origin = await startServer({ client });
@@ -233,8 +224,8 @@ test('returns an addressable voice turn', async () => {
     body: new Uint8Array([1, 2, 3])
   });
 
-  assert.equal(response.status, 202);
-  assert.equal(response.headers.get('location'), '/api/turns/turn_123');
-  assert.equal(response.headers.get('retry-after'), '1');
-  assert.equal((await response.json()).transcript, 'Hello');
+  assert.equal(response.status, 422);
+  assert.deepEqual(await response.json(), {
+    error: 'A valid pipeline mode is required.'
+  });
 });

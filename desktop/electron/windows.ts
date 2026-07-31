@@ -41,6 +41,7 @@ export function createPillWindow(preloadPath: string) {
     transparent: true,
     backgroundColor: '#00000000',
     alwaysOnTop: true,
+    focusable: false,
     skipTaskbar: true,
     resizable: false,
     minimizable: false,

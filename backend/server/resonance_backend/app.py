@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 import soundfile
@@ -11,7 +11,7 @@ from resonance_backend.asr_providers import (
     asr_runtime,
     list_asr_providers,
 )
-from resonance_backend.modes import MODES, get_mode, list_modes
+from resonance_backend.modes import MODES, get_mode
 from resonance_backend.response_providers import (
     RESPONSE_PROVIDERS,
     get_response_provider,
@@ -20,11 +20,9 @@ from resonance_backend.response_providers import (
 )
 from resonance_backend.settings import (
     load_asr_provider,
-    load_mode,
     load_response_provider,
     load_settings,
     save_asr_provider,
-    save_mode,
     save_response_provider,
 )
 
@@ -53,12 +51,9 @@ class ASRProviderSelection(BaseModel):
     provider: str
 
 
-class ModeSelection(BaseModel):
-    mode: str
-
-
 class TextTurn(BaseModel):
     text: str
+    mode: Literal["agent", "transcription"]
 
 
 def transcribe(file: UploadFile) -> str:
@@ -106,8 +101,8 @@ def create_turn(
         )
     if mode_id not in MODES:
         raise HTTPException(
-            status_code=500,
-            detail="The saved mode is not supported.",
+            status_code=422,
+            detail="The requested pipeline mode is not supported.",
         )
 
     turn_id = f"turn_{uuid4().hex}"
@@ -140,6 +135,7 @@ def run_response_stage(
         output_text = get_response_provider(response_provider).respond(
             message=transcript,
             instructions=mode.instructions,
+            mode_id=mode_id,
         )
     except Exception as error:
         turns[turn_id] = {
@@ -161,16 +157,16 @@ def create_voice_turn(
     background_tasks: BackgroundTasks,
     response: Response,
     file: Annotated[UploadFile, File()],
+    mode: Literal["agent", "transcription"],
 ) -> dict[str, str]:
     settings = load_settings()
     response_provider = settings["response_provider"]
-    mode_id = settings["mode"]
     transcript = transcribe(file)
     turn = create_turn(
         transcript,
         background_tasks,
         response_provider,
-        mode_id,
+        mode,
     )
     response.headers["Location"] = f"/v1/turns/{turn['id']}"
     response.headers["Retry-After"] = "1"
@@ -188,7 +184,7 @@ def create_text_turn(
         request.text.strip(),
         background_tasks,
         settings["response_provider"],
-        settings["mode"],
+        request.mode,
     )
     response.headers["Location"] = f"/v1/turns/{turn['id']}"
     response.headers["Retry-After"] = "1"
@@ -278,20 +274,3 @@ def set_asr_provider(selection: ASRProviderSelection) -> dict[str, str]:
         ) from error
 
     return {"provider": selection.provider}
-
-
-@app.get("/v1/modes")
-def get_modes() -> dict[str, object]:
-    return {
-        "current": load_mode(),
-        "modes": list_modes(),
-    }
-
-
-@app.put("/v1/modes/current")
-def set_mode(selection: ModeSelection) -> dict[str, str]:
-    if selection.mode not in MODES:
-        raise HTTPException(status_code=422, detail="Unknown mode.")
-
-    save_mode(selection.mode)
-    return {"mode": selection.mode}

@@ -9,12 +9,14 @@ import type {
 import {
   createTextTurn,
   createVoiceTurn,
+  type PipelineMode,
   waitForTurn
 } from '../services/backend';
 import { MicrophoneCapture } from '../services/microphoneCapture';
 import { formatTimestamp } from '../utils/dialogueEngine';
 import { useAudioVisualization } from './useAudioVisualization';
 import { useSpeechOutput } from './useSpeechOutput';
+import type { PillStatus } from '../components/transcription-pill/pillPresentation';
 
 const DEFAULT_THEME: VisualTheme = 'clay-blob';
 
@@ -49,6 +51,8 @@ export function useVoiceAgent() {
   const [phase, setPhaseValue] = useState<VoicePhase>('idle');
   const [visualTheme, setVisualTheme] = useState<VisualTheme>(DEFAULT_THEME);
   const [agentModeEnabled, setAgentModeEnabled] = useState(false);
+  const [transcriptionPillStatus, setTranscriptionPillStatus] =
+    useState<PillStatus>('idle');
   const [transcript, setTranscript] = useState<DialogueTurn[]>([
     {
       id: createTurnId('system'),
@@ -61,13 +65,17 @@ export function useVoiceAgent() {
   const phaseRef = useRef<VoicePhase>('idle');
   const agentModeEnabledRef = useRef(false);
   const activeInputModeRef = useRef<VoiceInputMode | null>(null);
+  const activePipelineModeRef = useRef<PipelineMode | null>(null);
+  const insertionSessionRef = useRef<string | null>(null);
   const holdReleasePendingRef = useRef(false);
+  const transcriptionHoldRequestedRef = useRef(false);
   const turnGenerationRef = useRef(0);
   const captureStartupRef = useRef<Promise<void> | null>(null);
   const captureStartupAbortRef = useRef<AbortController | null>(null);
   const captureRef = useRef<MicrophoneCapture | null>(null);
   const finishingCaptureRef = useRef<MicrophoneCapture | null>(null);
   const turnAbortRef = useRef<AbortController | null>(null);
+  const pillStatusTimerRef = useRef<number | null>(null);
 
   const {
     enabled: speechOutputEnabled,
@@ -102,6 +110,17 @@ export function useVoiceAgent() {
     ]);
   }, []);
 
+  const setTerminalPillStatus = useCallback((status: 'success' | 'error') => {
+    if (pillStatusTimerRef.current !== null) {
+      window.clearTimeout(pillStatusTimerRef.current);
+    }
+    setTranscriptionPillStatus(status);
+    pillStatusTimerRef.current = window.setTimeout(() => {
+      pillStatusTimerRef.current = null;
+      setTranscriptionPillStatus('idle');
+    }, 1800);
+  }, []);
+
   const prepareForTurn = useCallback(async () => {
     const generation = ++turnGenerationRef.current;
     holdReleasePendingRef.current = false;
@@ -109,6 +128,12 @@ export function useVoiceAgent() {
     captureStartupAbortRef.current?.abort();
     turnAbortRef.current?.abort();
     turnAbortRef.current = null;
+    insertionSessionRef.current = null;
+    if (pillStatusTimerRef.current !== null) {
+      window.clearTimeout(pillStatusTimerRef.current);
+      pillStatusTimerRef.current = null;
+    }
+    setTranscriptionPillStatus('idle');
     cancelSpeech();
 
     const capture = captureRef.current;
@@ -123,10 +148,12 @@ export function useVoiceAgent() {
       } else {
         captureRef.current = null;
         activeInputModeRef.current = null;
+        activePipelineModeRef.current = null;
         await capture.dispose();
       }
     } else if (!agentModeEnabledRef.current) {
       activeInputModeRef.current = null;
+      activePipelineModeRef.current = null;
     }
 
     finishingCaptureRef.current = null;
@@ -220,7 +247,7 @@ export function useVoiceAgent() {
   );
 
   const transcribeRecording = useCallback(
-    async (audio: Blob, generation: number) => {
+    async (audio: Blob, generation: number, pipelineMode: PipelineMode) => {
       if (generation !== turnGenerationRef.current) return;
 
       setPhase('transcribing');
@@ -228,17 +255,42 @@ export function useVoiceAgent() {
       turnAbortRef.current = abortController;
 
       try {
-        const turn = await createVoiceTurn(audio, abortController.signal);
+        const turn = await createVoiceTurn(audio, pipelineMode, abortController.signal);
         if (generation !== turnGenerationRef.current) return;
         if (!turn.transcript) throw new Error('No speech was detected.');
 
-        appendTurn('user', turn.transcript);
-        await receiveAgentResponse(turn.id, generation, abortController.signal);
+        if (pipelineMode === 'agent') {
+          appendTurn('user', turn.transcript);
+          await receiveAgentResponse(turn.id, generation, abortController.signal);
+        } else {
+          setPhase('responding');
+          const completedTurn = await waitForTurn(turn.id, abortController.signal);
+          if (generation !== turnGenerationRef.current) return;
+          const sessionId = insertionSessionRef.current;
+          insertionSessionRef.current = null;
+          const bridge = window.resonanceDesktop;
+          if (!bridge || !sessionId) {
+            throw new Error('The transcription target is unavailable.');
+          }
+          const insertion = await bridge.insertTextAtCaret(
+            sessionId,
+            completedTurn.response!
+          );
+          if (insertion.status !== 'inserted') {
+            throw new Error(insertion.reason || 'Text could not be inserted at the caret.');
+          }
+          setTerminalPillStatus('success');
+          settleTurn(generation);
+        }
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
 
         console.error('Voice turn failed.', error);
-        appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
+        if (pipelineMode === 'transcription') {
+          setTerminalPillStatus('error');
+        } else {
+          appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
+        }
         settleTurn(generation);
       } finally {
         if (turnAbortRef.current === abortController) {
@@ -246,7 +298,13 @@ export function useVoiceAgent() {
         }
       }
     },
-    [appendTurn, receiveAgentResponse, setPhase, settleTurn]
+    [
+      appendTurn,
+      receiveAgentResponse,
+      setPhase,
+      setTerminalPillStatus,
+      settleTurn
+    ]
   );
 
   const finishCaptureAndTranscribe = useCallback(
@@ -261,7 +319,9 @@ export function useVoiceAgent() {
 
       finishingCaptureRef.current = capture;
       const mode = activeInputModeRef.current;
+      const pipelineMode = activePipelineModeRef.current;
       setPhase('transcribing');
+      if (pipelineMode === 'transcription') setTranscriptionPillStatus('processing');
 
       try {
         const audio = await capture.finish();
@@ -270,24 +330,34 @@ export function useVoiceAgent() {
         if (mode !== 'agent') {
           if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
+          activePipelineModeRef.current = null;
           await capture.dispose();
         }
 
         if (generation !== turnGenerationRef.current) return;
         if (!audio) {
+          if (pipelineMode === 'transcription') {
+            setTranscriptionPillStatus('idle');
+          }
           settleTurn(generation);
           return;
         }
 
-        await transcribeRecording(audio, generation);
+        if (!pipelineMode) throw new Error('Voice pipeline mode is unavailable.');
+        await transcribeRecording(audio, generation, pipelineMode);
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
         if (captureRef.current === capture) captureRef.current = null;
         activeInputModeRef.current = null;
+        activePipelineModeRef.current = null;
         setAgentMode(false);
         await capture.dispose();
         console.error('Recording failed.', error);
-        appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
+        if (pipelineMode === 'transcription') {
+          setTerminalPillStatus('error');
+        } else {
+          appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
+        }
         setPhase('idle');
       } finally {
         if (finishingCaptureRef.current === capture) {
@@ -295,21 +365,54 @@ export function useVoiceAgent() {
         }
       }
     },
-    [appendTurn, setAgentMode, setPhase, settleTurn, transcribeRecording]
+    [
+      appendTurn,
+      setAgentMode,
+      setPhase,
+      setTerminalPillStatus,
+      settleTurn,
+      transcribeRecording
+    ]
   );
 
   const startCapture = useCallback(
-    async (mode: VoiceInputMode) => {
+    async (
+      mode: VoiceInputMode,
+      pipelineMode: PipelineMode,
+      alreadyPrepared = false
+    ) => {
       if (captureStartupRef.current) return captureStartupRef.current;
 
       let abortController: AbortController | null = null;
       const startup = (async () => {
-        await prepareForTurn();
+        if (!alreadyPrepared) await prepareForTurn();
         const generation = turnGenerationRef.current;
         abortController = new AbortController();
         captureStartupAbortRef.current = abortController;
         activeInputModeRef.current = mode;
+        activePipelineModeRef.current = pipelineMode;
+        if (pipelineMode === 'transcription') {
+          const bridge = window.resonanceDesktop;
+          if (!bridge) {
+            setTerminalPillStatus('error');
+            activeInputModeRef.current = null;
+            activePipelineModeRef.current = null;
+            return;
+          }
+          try {
+            insertionSessionRef.current = await bridge.beginTextInsertion();
+          } catch (error) {
+            console.error('The transcription target could not be captured.', error);
+            setTerminalPillStatus('error');
+            activeInputModeRef.current = null;
+            activePipelineModeRef.current = null;
+            return;
+          }
+        }
         setAgentMode(mode === 'agent');
+        if (pipelineMode === 'transcription') {
+          setTranscriptionPillStatus('recording');
+        }
         setPhase('acquiring-microphone');
 
         let capture: MicrophoneCapture;
@@ -320,8 +423,13 @@ export function useVoiceAgent() {
 
           console.warn('Microphone unavailable.', error);
           activeInputModeRef.current = null;
+          activePipelineModeRef.current = null;
           setAgentMode(false);
-          appendTurn('agent', 'Microphone access is unavailable.');
+          if (pipelineMode === 'transcription') {
+            setTerminalPillStatus('error');
+          } else {
+            appendTurn('agent', 'Microphone access is unavailable.');
+          }
           setPhase('idle');
           return;
         }
@@ -350,12 +458,17 @@ export function useVoiceAgent() {
         } catch (error) {
           if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
+          activePipelineModeRef.current = null;
           await capture.dispose();
           if (generation !== turnGenerationRef.current) return;
 
           console.error('Recording failed.', error);
           setAgentMode(false);
-          appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
+          if (pipelineMode === 'transcription') {
+            setTerminalPillStatus('error');
+          } else {
+            appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
+          }
           setPhase('idle');
           return;
         }
@@ -366,6 +479,7 @@ export function useVoiceAgent() {
         ) {
           if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
+          activePipelineModeRef.current = null;
           await capture.dispose();
           return;
         }
@@ -391,7 +505,8 @@ export function useVoiceAgent() {
       finishCaptureAndTranscribe,
       prepareForTurn,
       setAgentMode,
-      setPhase
+      setPhase,
+      setTerminalPillStatus
     ]
   );
 
@@ -422,17 +537,22 @@ export function useVoiceAgent() {
       return;
     }
 
-    await startCapture('tap');
+    await startCapture('tap', 'agent');
   }, [finishCaptureAndTranscribe, prepareForTurn, setAgentMode, startCapture]);
 
   const beginHoldToTalk = useCallback(async () => {
     if (agentModeEnabledRef.current || phaseRef.current !== 'idle') return;
     holdReleasePendingRef.current = false;
-    await startCapture('hold');
+    await startCapture('hold', 'agent');
   }, [startCapture]);
 
   const endHoldToTalk = useCallback(async () => {
-    if (activeInputModeRef.current !== 'hold') return;
+    if (
+      activeInputModeRef.current !== 'hold' &&
+      !transcriptionHoldRequestedRef.current
+    ) {
+      return;
+    }
     holdReleasePendingRef.current = true;
 
     const capture = captureRef.current;
@@ -443,7 +563,7 @@ export function useVoiceAgent() {
 
   const enableAgentMode = useCallback(async () => {
     if (agentModeEnabledRef.current) return;
-    await startCapture('agent');
+    await startCapture('agent', 'agent');
   }, [startCapture]);
 
   const disableAgentMode = useCallback(async () => {
@@ -451,6 +571,60 @@ export function useVoiceAgent() {
     setAgentMode(false);
     await prepareForTurn();
   }, [prepareForTurn, setAgentMode]);
+
+  const toggleTranscription = useCallback(async () => {
+    if (
+      phaseRef.current === 'listening' &&
+      activeInputModeRef.current === 'tap' &&
+      activePipelineModeRef.current === 'transcription' &&
+      captureRef.current
+    ) {
+      await finishCaptureAndTranscribe(
+        captureRef.current,
+        turnGenerationRef.current
+      );
+      return;
+    }
+    if (agentModeEnabledRef.current) {
+      setAgentMode(false);
+    }
+    let alreadyPrepared = false;
+    if (captureStartupRef.current !== null) {
+      const pendingStartup = captureStartupRef.current;
+      await prepareForTurn();
+      await pendingStartup.catch(() => undefined);
+      alreadyPrepared = true;
+    }
+    await startCapture('tap', 'transcription', alreadyPrepared);
+  }, [
+    finishCaptureAndTranscribe,
+    prepareForTurn,
+    setAgentMode,
+    startCapture
+  ]);
+
+  const beginTranscription = useCallback(async () => {
+    if (activePipelineModeRef.current === 'transcription') {
+      return;
+    }
+    transcriptionHoldRequestedRef.current = true;
+    holdReleasePendingRef.current = false;
+    try {
+      if (agentModeEnabledRef.current) {
+        setAgentMode(false);
+      }
+      let alreadyPrepared = false;
+      if (captureStartupRef.current !== null) {
+        const pendingStartup = captureStartupRef.current;
+        await prepareForTurn();
+        await pendingStartup.catch(() => undefined);
+        alreadyPrepared = true;
+      }
+      await startCapture('hold', 'transcription', alreadyPrepared);
+    } finally {
+      transcriptionHoldRequestedRef.current = false;
+    }
+  }, [prepareForTurn, setAgentMode, startCapture]);
 
   const cancelCurrentTurn = useCallback(() => {
     void (async () => {
@@ -480,7 +654,7 @@ export function useVoiceAgent() {
         turnAbortRef.current = abortController;
         setPhase('responding');
         try {
-          const turn = await createTextTurn(text, abortController.signal);
+          const turn = await createTextTurn(text, 'agent', abortController.signal);
           await receiveAgentResponse(turn.id, generation, abortController.signal);
         } catch (error) {
           if (generation !== turnGenerationRef.current) return;
@@ -520,6 +694,10 @@ export function useVoiceAgent() {
       captureStartupAbortRef.current?.abort();
       turnAbortRef.current?.abort();
       turnAbortRef.current = null;
+      insertionSessionRef.current = null;
+      if (pillStatusTimerRef.current !== null) {
+        window.clearTimeout(pillStatusTimerRef.current);
+      }
       const capture = captureRef.current;
       captureRef.current = null;
       if (capture) void capture.dispose();
@@ -537,11 +715,14 @@ export function useVoiceAgent() {
     agentModeEnabled,
     currentSpeechVolume,
     audioFrequencies,
+    transcriptionPillStatus,
     toggleListening,
     beginHoldToTalk,
     endHoldToTalk,
     enableAgentMode,
     disableAgentMode,
+    toggleTranscription,
+    beginTranscription,
     submitTextTurn,
     toggleSpeechOutput,
     selectTheme,

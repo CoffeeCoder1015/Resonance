@@ -20,9 +20,9 @@ TRANSCRIPTION_INSTRUCTIONS = (
 
 
 MODES = {
-    "voice": Mode(
-        id="voice",
-        label="Voice",
+    "agent": Mode(
+        id="agent",
+        label="Agent",
         instructions=(
             "Respond in concise, natural spoken English. Return plain text only. "
             "Do not use Markdown, headings, lists, tables, code fences, raw URLs, "
@@ -43,13 +43,3 @@ def get_mode(mode_id: str) -> Mode:
         return MODES[mode_id]
     except KeyError as error:
         raise RuntimeError(f"Unknown mode: {mode_id}") from error
-
-
-def list_modes() -> list[dict[str, str]]:
-    return [
-        {
-            "id": mode.id,
-            "label": mode.label,
-        }
-        for mode in MODES.values()
-    ]

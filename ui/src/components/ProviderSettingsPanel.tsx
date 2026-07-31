@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
 import {
   getASRProviderSettings,
-  getModeSettings,
   getResponseProviderSettings,
   selectASRProvider,
-  selectMode,
   selectResponseProvider,
   type ASRProviderOption,
-  type ModeOption,
   type ResponseProviderOption
 } from '../services/backend';
 import { HotkeySettingsPanel } from './HotkeySettingsPanel';
@@ -23,8 +20,6 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
   const [selectedResponseProvider, setSelectedResponseProvider] = useState('');
   const [asrProviderOptions, setASRProviderOptions] = useState<ASRProviderOption[]>([]);
   const [selectedASRProvider, setSelectedASRProvider] = useState('');
-  const [modeOptions, setModeOptions] = useState<ModeOption[]>([]);
-  const [selectedMode, setSelectedMode] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -33,16 +28,13 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
     const abortController = new AbortController();
     void Promise.all([
       getResponseProviderSettings(abortController.signal),
-      getASRProviderSettings(abortController.signal),
-      getModeSettings(abortController.signal)
+      getASRProviderSettings(abortController.signal)
     ])
-      .then(([responseProviderSettings, asrSettings, modeSettings]) => {
+      .then(([responseProviderSettings, asrSettings]) => {
         setResponseProviderOptions(responseProviderSettings.providers);
         setSelectedResponseProvider(responseProviderSettings.current);
         setASRProviderOptions(asrSettings.providers);
         setSelectedASRProvider(asrSettings.current);
-        setModeOptions(modeSettings.modes);
-        setSelectedMode(modeSettings.current);
       })
       .catch(error => {
         if (!abortController.signal.aborted) {
@@ -65,18 +57,6 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Response provider could not be changed.'
       );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleModeChange = async (mode: string) => {
-    setSaving(true);
-    setErrorMessage(null);
-    try {
-      setSelectedMode(await selectMode(mode));
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Mode could not be changed.');
     } finally {
       setSaving(false);
     }
@@ -173,33 +153,6 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
       </div>
       <HotkeySettingsPanel />
       </>
-      )}
-
-      {section === 'agent' && (
-      <div className="mt-5 rounded-[1.5rem] border-[3px] border-black bg-[#d7f5ff] p-4 neo-shadow sm:p-5">
-        <label htmlFor="agent-mode" className="mb-2 block text-sm font-black">
-          Response mode
-        </label>
-        <select
-          id="agent-mode"
-          value={selectedMode}
-          disabled={loading || saving || modeOptions.length === 0}
-          onChange={event => void handleModeChange(event.target.value)}
-          className="w-full rounded-xl border-[3px] border-black bg-white px-4 py-3 text-sm font-black outline-none neo-shadow-sm focus:ring-4 focus:ring-[#007bff]/30 disabled:opacity-60"
-        >
-          {modeOptions.length === 0 && (
-            <option value="">{loading ? 'Loading modes...' : 'No modes available'}</option>
-          )}
-          {modeOptions.map(mode => (
-            <option key={mode.id} value={mode.id}>
-              {mode.label}
-            </option>
-          ))}
-        </select>
-        <p className="mt-3 text-xs font-semibold leading-relaxed text-black/55">
-          Voice returns spoken plain text. Transcription refines the captured words.
-        </p>
-      </div>
       )}
 
       <div className="mt-4 flex items-center gap-2 text-xs font-bold" aria-live="polite">
