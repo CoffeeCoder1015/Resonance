@@ -12,6 +12,7 @@
 #define MODIFIER_POLL_MS 10
 #define CLIPBOARD_RETRY_COUNT 10
 #define CLIPBOARD_RETRY_DELAY_MS 25
+#define CLIPBOARD_RENDER_TIMEOUT_MS 5000
 #define REQUESTED_INPUT_COUNT 4
 
 typedef enum SnapshotHandleKind {
@@ -34,6 +35,14 @@ typedef struct ClipboardSnapshot {
   size_t capacity;
   size_t skipped;
 } ClipboardSnapshot;
+
+typedef struct PasteClipboardState {
+  const wchar_t *text;
+  HANDLE rendered_event;
+  BOOL rendered;
+  DWORD render_error;
+  DWORD sequence_number;
+} PasteClipboardState;
 
 static const int MODIFIER_KEYS[] = {
   VK_LSHIFT,
@@ -346,47 +355,168 @@ static BOOL capture_clipboard(
   return TRUE;
 }
 
-static BOOL write_transcript(
-  HWND owner_window,
-  const wchar_t *text,
-  DWORD *native_error
-) {
+static HGLOBAL create_unicode_text_handle(const wchar_t *text) {
   SIZE_T bytes = (wcslen(text) + 1) * sizeof(wchar_t);
   HGLOBAL text_handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
   if (text_handle == NULL) {
-    *native_error = GetLastError();
-    return FALSE;
+    return NULL;
   }
 
   wchar_t *target = (wchar_t *)GlobalLock(text_handle);
   if (target == NULL) {
-    *native_error = GetLastError();
     GlobalFree(text_handle);
-    return FALSE;
+    return NULL;
   }
   memcpy(target, text, bytes);
   GlobalUnlock(text_handle);
+  return text_handle;
+}
+
+static BOOL set_clipboard_dword(UINT format, DWORD value) {
+  HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+  if (handle == NULL) {
+    return FALSE;
+  }
+
+  DWORD *data = (DWORD *)GlobalLock(handle);
+  if (data == NULL) {
+    GlobalFree(handle);
+    return FALSE;
+  }
+  *data = value;
+  GlobalUnlock(handle);
+
+  if (SetClipboardData(format, handle) == NULL) {
+    GlobalFree(handle);
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static BOOL render_transcript(PasteClipboardState *state) {
+  if (state->rendered) {
+    return TRUE;
+  }
+
+  HGLOBAL text_handle = create_unicode_text_handle(state->text);
+  if (text_handle == NULL) {
+    state->render_error = GetLastError();
+    return FALSE;
+  }
+  if (SetClipboardData(CF_UNICODETEXT, text_handle) == NULL) {
+    state->render_error = GetLastError();
+    GlobalFree(text_handle);
+    return FALSE;
+  }
+
+  state->rendered = TRUE;
+  state->sequence_number = GetClipboardSequenceNumber();
+  return TRUE;
+}
+
+static LRESULT CALLBACK clipboard_owner_proc(
+  HWND window,
+  UINT message,
+  WPARAM w_param,
+  LPARAM l_param
+) {
+  PasteClipboardState *state = (PasteClipboardState *)GetWindowLongPtrW(
+    window,
+    GWLP_USERDATA
+  );
+  if (message == WM_NCCREATE) {
+    CREATESTRUCTW *create = (CREATESTRUCTW *)l_param;
+    state = (PasteClipboardState *)create->lpCreateParams;
+    SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)state);
+  } else if (message == WM_RENDERFORMAT && state != NULL) {
+    if ((UINT)w_param == CF_UNICODETEXT) {
+      /* This is the acknowledgement that the paste target requested our text. */
+      render_transcript(state);
+      SetEvent(state->rendered_event);
+    }
+    return 0;
+  } else if (message == WM_RENDERALLFORMATS && state != NULL) {
+    if (GetClipboardOwner() == window && open_clipboard_retry(window)) {
+      render_transcript(state);
+      CloseClipboard();
+    }
+    return 0;
+  }
+  return DefWindowProcW(window, message, w_param, l_param);
+}
+
+static BOOL advertise_transcript(
+  HWND owner_window,
+  PasteClipboardState *state,
+  DWORD *native_error
+) {
+  UINT exclude_monitoring = RegisterClipboardFormatW(
+    L"ExcludeClipboardContentFromMonitorProcessing"
+  );
 
   if (!open_clipboard_retry(owner_window)) {
     *native_error = GetLastError();
-    GlobalFree(text_handle);
     return FALSE;
   }
   if (!EmptyClipboard()) {
     *native_error = GetLastError();
     CloseClipboard();
-    GlobalFree(text_handle);
     return FALSE;
   }
-  if (SetClipboardData(CF_UNICODETEXT, text_handle) == NULL) {
+  if (exclude_monitoring == 0 || !set_clipboard_dword(exclude_monitoring, 1)) {
     *native_error = GetLastError();
     CloseClipboard();
-    GlobalFree(text_handle);
+    return FALSE;
+  }
+
+  /* Delayed rendering lets WM_RENDERFORMAT replace a blind restore timer. */
+  SetLastError(ERROR_SUCCESS);
+  SetClipboardData(CF_UNICODETEXT, NULL);
+  DWORD delayed_render_error = GetLastError();
+  if (delayed_render_error != ERROR_SUCCESS) {
+    *native_error = delayed_render_error;
+    CloseClipboard();
     return FALSE;
   }
 
   CloseClipboard();
+  state->sequence_number = GetClipboardSequenceNumber();
   return TRUE;
+}
+
+static BOOL wait_for_transcript_request(PasteClipboardState *state) {
+  ULONGLONG started = GetTickCount64();
+  while (GetTickCount64() - started < CLIPBOARD_RENDER_TIMEOUT_MS) {
+    DWORD elapsed = (DWORD)(GetTickCount64() - started);
+    DWORD remaining = CLIPBOARD_RENDER_TIMEOUT_MS - elapsed;
+    DWORD wait_result = MsgWaitForMultipleObjects(
+      1,
+      &state->rendered_event,
+      FALSE,
+      remaining,
+      QS_ALLINPUT
+    );
+    if (wait_result == WAIT_OBJECT_0) {
+      return state->rendered;
+    }
+    if (wait_result == WAIT_OBJECT_0 + 1) {
+      MSG message;
+      while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+      }
+      if (state->rendered || state->render_error != ERROR_SUCCESS) {
+        return state->rendered;
+      }
+      continue;
+    }
+    if (wait_result == WAIT_TIMEOUT) {
+      break;
+    }
+    state->render_error = GetLastError();
+    break;
+  }
+  return FALSE;
 }
 
 static BOOL restore_clipboard(
@@ -549,10 +679,21 @@ static int run_foreground(void) {
   return 0;
 }
 
-static HWND create_clipboard_owner_window(void) {
+static HWND create_clipboard_owner_window(PasteClipboardState *state) {
+  const wchar_t *class_name = L"ResonanceClipboardOwnerWindow";
+  WNDCLASSW window_class;
+  memset(&window_class, 0, sizeof(window_class));
+  window_class.lpfnWndProc = clipboard_owner_proc;
+  window_class.hInstance = GetModuleHandleW(NULL);
+  window_class.lpszClassName = class_name;
+  if (RegisterClassW(&window_class) == 0
+      && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    return NULL;
+  }
+
   return CreateWindowExW(
     0,
-    L"STATIC",
+    class_name,
     L"ResonanceClipboardOwner",
     WS_POPUP,
     0,
@@ -561,8 +702,8 @@ static HWND create_clipboard_owner_window(void) {
     0,
     NULL,
     NULL,
-    GetModuleHandleW(NULL),
-    NULL
+    window_class.hInstance,
+    state
   );
 }
 
@@ -610,11 +751,24 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
     return 0;
   }
 
-  HWND owner_window = create_clipboard_owner_window();
+  PasteClipboardState clipboard_state;
+  memset(&clipboard_state, 0, sizeof(clipboard_state));
+  clipboard_state.text = text;
+  clipboard_state.rendered_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+  if (clipboard_state.rendered_event == NULL) {
+    DWORD event_error = GetLastError();
+    printf("clipboard-failed:%lu", (unsigned long)event_error);
+    print_diagnostics(0, NULL);
+    free(text);
+    return 0;
+  }
+
+  HWND owner_window = create_clipboard_owner_window(&clipboard_state);
   if (owner_window == NULL) {
     DWORD owner_error = GetLastError();
     printf("clipboard-failed:%lu", (unsigned long)owner_error);
     print_diagnostics(0, NULL);
+    CloseHandle(clipboard_state.rendered_event);
     free(text);
     return 0;
   }
@@ -625,6 +779,7 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
     printf("clipboard-failed:%lu", (unsigned long)native_error);
     print_diagnostics(0, NULL);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
     free(text);
     return 0;
   }
@@ -644,31 +799,33 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
     print_diagnostics(0, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
     free(text);
     return 0;
   }
 
-  if (!write_transcript(owner_window, text, &native_error)) {
+  if (!advertise_transcript(owner_window, &clipboard_state, &native_error)) {
     DWORD restore_error = ERROR_SUCCESS;
     restore_clipboard(owner_window, &snapshot, &restore_error);
     printf("clipboard-failed:%lu", (unsigned long)native_error);
     print_diagnostics(0, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
     free(text);
     return 0;
   }
-  free(text);
 
-  DWORD transcript_sequence = GetClipboardSequenceNumber();
   if (GetForegroundWindow() != expected_window) {
-    if (GetClipboardSequenceNumber() == transcript_sequence) {
+    if (GetClipboardSequenceNumber() == clipboard_state.sequence_number) {
       restore_clipboard(owner_window, &snapshot, &native_error);
     }
     printf("target-changed:0");
     print_diagnostics(0, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
+    free(text);
     return 0;
   }
 
@@ -688,23 +845,43 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
 
   if (sent != REQUESTED_INPUT_COUNT) {
     release_paste_keys();
-    if (GetClipboardSequenceNumber() == transcript_sequence) {
+    if (GetClipboardSequenceNumber() == clipboard_state.sequence_number) {
       restore_clipboard(owner_window, &snapshot, &native_error);
     }
     printf("send-failed:%lu", (unsigned long)send_error);
     print_diagnostics(sent, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
+    free(text);
     return 0;
   }
 
+  if (!wait_for_transcript_request(&clipboard_state)) {
+    DWORD render_error = clipboard_state.render_error;
+    if (render_error == ERROR_SUCCESS) {
+      render_error = WAIT_TIMEOUT;
+    }
+    log_stage("clipboard-render", "target did not consume transcript");
+    printf("paste-timeout:%lu", (unsigned long)render_error);
+    print_diagnostics(sent, &snapshot);
+    free_snapshot(&snapshot);
+    DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
+    free(text);
+    return 0;
+  }
+
+  log_stage("clipboard-render", "target consumed transcript");
   Sleep(restore_delay_ms);
-  if (GetClipboardSequenceNumber() != transcript_sequence) {
+  if (GetClipboardSequenceNumber() != clipboard_state.sequence_number) {
     log_stage("clipboard-restore", "skipped because clipboard changed");
     printf("inserted:restore-skipped");
     print_diagnostics(sent, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
+    free(text);
     return 0;
   }
 
@@ -714,6 +891,8 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
     print_diagnostics(sent, &snapshot);
     free_snapshot(&snapshot);
     DestroyWindow(owner_window);
+    CloseHandle(clipboard_state.rendered_event);
+    free(text);
     return 0;
   }
 
@@ -722,6 +901,8 @@ static int run_paste(HWND expected_window, DWORD restore_delay_ms) {
   print_diagnostics(sent, &snapshot);
   free_snapshot(&snapshot);
   DestroyWindow(owner_window);
+  CloseHandle(clipboard_state.rendered_event);
+  free(text);
   return 0;
 }
 

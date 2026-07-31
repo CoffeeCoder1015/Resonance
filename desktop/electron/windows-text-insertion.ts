@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const NATIVE_HELPER_TIMEOUT_MS = 10_000;
-const CLIPBOARD_RESTORE_DELAY_MS = 750;
+const CLIPBOARD_RESTORE_DELAY_MS = 100;
 const directory = path.dirname(fileURLToPath(import.meta.url));
 
 export interface ForegroundTarget {
@@ -22,6 +22,7 @@ export type NativeInsertionResult = (
   | { status: 'target-changed' }
   | { status: 'clipboard-failed'; nativeError: number }
   | { status: 'restore-failed'; nativeError: number }
+  | { status: 'paste-timeout'; nativeError: number }
   | { status: 'send-failed'; nativeError: number }
 ) & { diagnostics: NativeInsertionDiagnostics };
 
@@ -175,6 +176,7 @@ export async function pasteTextViaClipboard(
   if (
     (status === 'clipboard-failed' ||
       status === 'restore-failed' ||
+      status === 'paste-timeout' ||
       status === 'send-failed') &&
     Number.isSafeInteger(value)
   ) {

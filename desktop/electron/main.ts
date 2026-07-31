@@ -189,6 +189,13 @@ async function insertTextAtCaret(
             : `The Windows clipboard could not be accessed (error ${result.nativeError}).`
       };
     }
+    if (result.status === 'paste-timeout') {
+      return {
+        status: 'failed',
+        reason:
+          'Windows accepted the paste shortcut, but the target did not request the transcript from the clipboard.'
+      };
+    }
     return {
       status: 'failed',
       reason:
