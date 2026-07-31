@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
-  AgentState,
   DialogueTurn,
   VisualTheme,
   VoiceInputMode,
@@ -8,15 +7,14 @@ import type {
 } from '../types/voice';
 import {
   createTextTurn,
-  createVoiceTurn,
-  type PipelineMode,
   waitForTurn
 } from '../services/backend';
 import { MicrophoneCapture } from '../services/microphoneCapture';
+import { VoicePipeline } from '../services/voicePipeline';
+import { voicePhaseToAgentState } from '../services/voiceState';
 import { formatTimestamp } from '../utils/dialogueEngine';
 import { useAudioVisualization } from './useAudioVisualization';
 import { useSpeechOutput } from './useSpeechOutput';
-import type { PillStatus } from '../components/transcription-pill/pillPresentation';
 
 const DEFAULT_THEME: VisualTheme = 'clay-blob';
 
@@ -28,21 +26,6 @@ function createTurnId(prefix: 'user' | 'agent' | 'system') {
   return `${prefix}-${id}`;
 }
 
-function toAgentState(phase: VoicePhase): AgentState {
-  switch (phase) {
-    case 'listening':
-      return 'listening';
-    case 'transcribing':
-    case 'responding':
-      return 'processing';
-    case 'speaking':
-      return 'speaking';
-    case 'acquiring-microphone':
-    case 'idle':
-      return 'idle';
-  }
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
@@ -51,8 +34,6 @@ export function useVoiceAgent() {
   const [phase, setPhaseValue] = useState<VoicePhase>('idle');
   const [visualTheme, setVisualTheme] = useState<VisualTheme>(DEFAULT_THEME);
   const [agentModeEnabled, setAgentModeEnabled] = useState(false);
-  const [transcriptionPillStatus, setTranscriptionPillStatus] =
-    useState<PillStatus>('idle');
   const [transcript, setTranscript] = useState<DialogueTurn[]>([
     {
       id: createTurnId('system'),
@@ -65,19 +46,14 @@ export function useVoiceAgent() {
   const phaseRef = useRef<VoicePhase>('idle');
   const agentModeEnabledRef = useRef(false);
   const activeInputModeRef = useRef<VoiceInputMode | null>(null);
-  const activePipelineModeRef = useRef<PipelineMode | null>(null);
-  const insertionSessionRef = useRef<string | null>(null);
   const holdReleasePendingRef = useRef(false);
-  const transcriptionHoldRequestedRef = useRef(false);
   const turnGenerationRef = useRef(0);
   const captureStartupRef = useRef<Promise<void> | null>(null);
-  const captureStartupAbortRef = useRef<AbortController | null>(null);
-  const captureOpenRef = useRef<Promise<MicrophoneCapture> | null>(null);
-  const captureOpenAbortRef = useRef<AbortController | null>(null);
-  const captureRef = useRef<MicrophoneCapture | null>(null);
+  const pipelineRef = useRef<VoicePipeline | null>(null);
+  if (!pipelineRef.current) pipelineRef.current = new VoicePipeline();
+  const pipeline = pipelineRef.current;
   const finishingCaptureRef = useRef<MicrophoneCapture | null>(null);
   const turnAbortRef = useRef<AbortController | null>(null);
-  const pillStatusTimerRef = useRef<number | null>(null);
 
   const {
     enabled: speechOutputEnabled,
@@ -96,37 +72,10 @@ export function useVoiceAgent() {
     setAgentModeEnabled(enabled);
   }, []);
 
-  const ensureCapture = useCallback(async () => {
-    if (captureRef.current) return captureRef.current;
-    if (captureOpenRef.current) return captureOpenRef.current;
+  const ensureCapture = useCallback(() => pipeline.ensureCapture(), [pipeline]);
 
-    const abortController = new AbortController();
-    captureOpenAbortRef.current = abortController;
-    const opening = MicrophoneCapture.open(abortController.signal).then(
-      async capture => {
-        await capture.discardAndPause();
-        if (abortController.signal.aborted) {
-          await capture.dispose();
-          throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
-        }
-        captureRef.current = capture;
-        return capture;
-      }
-    );
-    captureOpenRef.current = opening;
-
-    try {
-      return await opening;
-    } finally {
-      if (captureOpenRef.current === opening) captureOpenRef.current = null;
-      if (captureOpenAbortRef.current === abortController) {
-        captureOpenAbortRef.current = null;
-      }
-    }
-  }, []);
-
-  const state = toAgentState(phase);
-  const analyser = captureRef.current?.analyser ?? null;
+  const state = voicePhaseToAgentState(phase);
+  const analyser = pipeline.analyser;
   const { currentSpeechVolume, audioFrequencies } = useAudioVisualization(state, analyser);
 
   const appendTurn = useCallback((sender: DialogueTurn['sender'], text: string) => {
@@ -141,47 +90,27 @@ export function useVoiceAgent() {
     ]);
   }, []);
 
-  const showPillError = useCallback(() => {
-    if (pillStatusTimerRef.current !== null) {
-      window.clearTimeout(pillStatusTimerRef.current);
-    }
-    setTranscriptionPillStatus('error');
-    pillStatusTimerRef.current = window.setTimeout(() => {
-      pillStatusTimerRef.current = null;
-      setTranscriptionPillStatus('idle');
-    }, 1800);
-  }, []);
-
   const prepareForTurn = useCallback(async () => {
     const generation = ++turnGenerationRef.current;
     holdReleasePendingRef.current = false;
 
-    captureStartupAbortRef.current?.abort();
     turnAbortRef.current?.abort();
     turnAbortRef.current = null;
-    insertionSessionRef.current = null;
-    if (pillStatusTimerRef.current !== null) {
-      window.clearTimeout(pillStatusTimerRef.current);
-      pillStatusTimerRef.current = null;
-    }
-    setTranscriptionPillStatus('idle');
     cancelSpeech();
 
-    const capture = captureRef.current;
+    const capture = pipeline.activeCapture;
     const preserveAgentCapture =
       agentModeEnabledRef.current &&
       activeInputModeRef.current === 'agent' &&
       capture !== null;
 
     if (capture) {
-      await capture.discardAndPause();
+      await pipeline.discardAndPause(capture);
       if (!preserveAgentCapture) {
         activeInputModeRef.current = null;
-        activePipelineModeRef.current = null;
       }
     } else if (!agentModeEnabledRef.current) {
       activeInputModeRef.current = null;
-      activePipelineModeRef.current = null;
     }
 
     finishingCaptureRef.current = null;
@@ -202,7 +131,7 @@ export function useVoiceAgent() {
         return;
       }
 
-      const capture = captureRef.current;
+      const capture = pipeline.activeCapture;
       if (!capture) {
         setAgentMode(false);
         setPhase('idle');
@@ -210,21 +139,20 @@ export function useVoiceAgent() {
       }
 
       try {
-        await capture.resume();
+        await pipeline.resume(capture);
         if (
           generation === turnGenerationRef.current &&
           agentModeEnabledRef.current &&
-          captureRef.current === capture
+          pipeline.owns(capture)
         ) {
           setPhase('listening');
         }
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
         console.error('Agent-mode microphone could not resume.', error);
-        captureRef.current = null;
         activeInputModeRef.current = null;
         setAgentMode(false);
-        await capture.dispose();
+        await pipeline.disposeCapture(capture);
         appendTurn('agent', 'Microphone access is unavailable.');
         setPhase('idle');
       }
@@ -275,7 +203,7 @@ export function useVoiceAgent() {
   );
 
   const transcribeRecording = useCallback(
-    async (audio: Blob, generation: number, pipelineMode: PipelineMode) => {
+    async (audio: Blob, generation: number) => {
       if (generation !== turnGenerationRef.current) return;
 
       setPhase('transcribing');
@@ -283,42 +211,16 @@ export function useVoiceAgent() {
       turnAbortRef.current = abortController;
 
       try {
-        const turn = await createVoiceTurn(audio, pipelineMode, abortController.signal);
+        const turn = await pipeline.createTurn(audio, 'agent', abortController.signal);
         if (generation !== turnGenerationRef.current) return;
         if (!turn.transcript) throw new Error('No speech was detected.');
-
-        if (pipelineMode === 'agent') {
-          appendTurn('user', turn.transcript);
-          await receiveAgentResponse(turn.id, generation, abortController.signal);
-        } else {
-          setPhase('responding');
-          const completedTurn = await waitForTurn(turn.id, abortController.signal);
-          if (generation !== turnGenerationRef.current) return;
-          setTranscriptionPillStatus('idle');
-          const sessionId = insertionSessionRef.current;
-          insertionSessionRef.current = null;
-          const bridge = window.resonanceDesktop;
-          if (!bridge || !sessionId) {
-            throw new Error('The transcription target is unavailable.');
-          }
-          const insertion = await bridge.insertTextAtCaret(
-            sessionId,
-            completedTurn.response!
-          );
-          if (insertion.status !== 'inserted') {
-            throw new Error(insertion.reason || 'Text could not be inserted at the caret.');
-          }
-          settleTurn(generation);
-        }
+        appendTurn('user', turn.transcript);
+        await receiveAgentResponse(turn.id, generation, abortController.signal);
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
 
         console.error('Voice turn failed.', error);
-        if (pipelineMode === 'transcription') {
-          showPillError();
-        } else {
-          appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
-        }
+        appendTurn('agent', getErrorMessage(error, 'Voice turn failed.'));
         settleTurn(generation);
       } finally {
         if (turnAbortRef.current === abortController) {
@@ -329,8 +231,6 @@ export function useVoiceAgent() {
     [
       appendTurn,
       receiveAgentResponse,
-      setPhase,
-      showPillError,
       settleTurn
     ]
   );
@@ -339,7 +239,7 @@ export function useVoiceAgent() {
     async (capture: MicrophoneCapture, generation: number) => {
       if (
         generation !== turnGenerationRef.current ||
-        captureRef.current !== capture ||
+        !pipeline.owns(capture) ||
         finishingCaptureRef.current === capture
       ) {
         return;
@@ -347,43 +247,30 @@ export function useVoiceAgent() {
 
       finishingCaptureRef.current = capture;
       const mode = activeInputModeRef.current;
-      const pipelineMode = activePipelineModeRef.current;
       setPhase('transcribing');
-      if (pipelineMode === 'transcription') setTranscriptionPillStatus('processing');
 
       try {
-        const audio = await capture.finish();
+        const audio = await pipeline.finish(capture);
         if (generation !== turnGenerationRef.current) return;
 
         if (mode !== 'agent') {
           activeInputModeRef.current = null;
-          activePipelineModeRef.current = null;
         }
 
         if (generation !== turnGenerationRef.current) return;
         if (!audio) {
-          if (pipelineMode === 'transcription') {
-            setTranscriptionPillStatus('idle');
-          }
           settleTurn(generation);
           return;
         }
 
-        if (!pipelineMode) throw new Error('Voice pipeline mode is unavailable.');
-        await transcribeRecording(audio, generation, pipelineMode);
+        await transcribeRecording(audio, generation);
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
-        if (captureRef.current === capture) captureRef.current = null;
         activeInputModeRef.current = null;
-        activePipelineModeRef.current = null;
         setAgentMode(false);
-        await capture.dispose();
+        await pipeline.disposeCapture(capture);
         console.error('Recording failed.', error);
-        if (pipelineMode === 'transcription') {
-          showPillError();
-        } else {
-          appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
-        }
+        appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
         setPhase('idle');
       } finally {
         if (finishingCaptureRef.current === capture) {
@@ -395,51 +282,23 @@ export function useVoiceAgent() {
       appendTurn,
       setAgentMode,
       setPhase,
-      showPillError,
       settleTurn,
       transcribeRecording
     ]
   );
 
   const startCapture = useCallback(
-    async (
-      mode: VoiceInputMode,
-      pipelineMode: PipelineMode,
-      alreadyPrepared = false
-    ) => {
+    async (mode: VoiceInputMode) => {
       if (captureStartupRef.current) return captureStartupRef.current;
 
-      let abortController: AbortController | null = null;
       const startup = (async () => {
-        if (!alreadyPrepared) await prepareForTurn();
+        await prepareForTurn();
         const generation = turnGenerationRef.current;
-        abortController = new AbortController();
-        captureStartupAbortRef.current = abortController;
         activeInputModeRef.current = mode;
-        activePipelineModeRef.current = pipelineMode;
-        let insertionResultPromise:
-          | Promise<{ sessionId: string; error?: never } | { sessionId?: never; error: unknown }>
-          | null = null;
-        if (pipelineMode === 'transcription') {
-          const bridge = window.resonanceDesktop;
-          if (!bridge) {
-            showPillError();
-            activeInputModeRef.current = null;
-            activePipelineModeRef.current = null;
-            return;
-          }
-          insertionResultPromise = bridge.beginTextInsertion().then(
-            sessionId => ({ sessionId }),
-            error => ({ error })
-          );
-        }
         setAgentMode(mode === 'agent');
-        if (pipelineMode === 'transcription') {
-          setTranscriptionPillStatus('recording');
-        }
         setPhase('acquiring-microphone');
 
-        let capture = captureRef.current;
+        let capture = pipeline.activeCapture;
         try {
           if (!capture) capture = await ensureCapture();
         } catch (error) {
@@ -447,30 +306,26 @@ export function useVoiceAgent() {
 
           console.warn('Microphone unavailable.', error);
           activeInputModeRef.current = null;
-          activePipelineModeRef.current = null;
           setAgentMode(false);
-          if (pipelineMode === 'transcription') {
-            showPillError();
-          } else {
-            appendTurn('agent', 'Microphone access is unavailable.');
-          }
+          appendTurn('agent', 'Microphone access is unavailable.');
           setPhase('idle');
           return;
         }
 
         if (generation !== turnGenerationRef.current) {
-          await capture.discardAndPause();
+          await pipeline.discardAndPause(capture);
           return;
         }
 
         let captureReady = false;
         let finishPending = false;
+        let startedCapture = capture;
         try {
-          await capture.start({
+          startedCapture = await pipeline.start({
             mode,
             onUtterance: () => {
               if (captureReady) {
-                void finishCaptureAndTranscribe(capture, generation);
+                void finishCaptureAndTranscribe(startedCapture, generation);
               } else {
                 finishPending = true;
               }
@@ -478,64 +333,37 @@ export function useVoiceAgent() {
             onMaxDuration: () => {
               if (
                 generation === turnGenerationRef.current &&
-                captureRef.current === capture
+                pipeline.owns(startedCapture)
               ) {
                 if (captureReady) {
-                  void finishCaptureAndTranscribe(capture, generation);
+                  void finishCaptureAndTranscribe(startedCapture, generation);
                 } else {
                   finishPending = true;
                 }
               }
             }
           });
+          capture = startedCapture;
         } catch (error) {
-          if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
-          activePipelineModeRef.current = null;
-          await capture.dispose();
+          await pipeline.disposeCapture(capture);
           if (generation !== turnGenerationRef.current) return;
 
           console.error('Recording failed.', error);
           setAgentMode(false);
-          if (pipelineMode === 'transcription') {
-            showPillError();
-          } else {
-            appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
-          }
+          appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
           setPhase('idle');
           return;
-        }
-
-        if (insertionResultPromise) {
-          const insertionResult = await insertionResultPromise;
-          if ('error' in insertionResult) {
-            activeInputModeRef.current = null;
-            activePipelineModeRef.current = null;
-            await capture.discardAndPause();
-            if (generation !== turnGenerationRef.current) return;
-
-            console.error(
-              'The transcription target could not be captured.',
-              insertionResult.error
-            );
-            setAgentMode(false);
-            showPillError();
-            setPhase('idle');
-            return;
-          }
-          insertionSessionRef.current = insertionResult.sessionId;
         }
 
         captureReady = true;
 
         if (
           generation !== turnGenerationRef.current ||
-          captureRef.current !== capture
+          !pipeline.owns(capture)
         ) {
-          if (captureRef.current === capture) captureRef.current = null;
           activeInputModeRef.current = null;
-          activePipelineModeRef.current = null;
-          await capture.dispose();
+          await pipeline.disposeCapture(capture);
           return;
         }
 
@@ -550,9 +378,6 @@ export function useVoiceAgent() {
         await startup;
       } finally {
         if (captureStartupRef.current === startup) captureStartupRef.current = null;
-        if (abortController && captureStartupAbortRef.current === abortController) {
-          captureStartupAbortRef.current = null;
-        }
       }
     },
     [
@@ -561,8 +386,7 @@ export function useVoiceAgent() {
       ensureCapture,
       prepareForTurn,
       setAgentMode,
-      setPhase,
-      showPillError
+      setPhase
     ]
   );
 
@@ -578,7 +402,7 @@ export function useVoiceAgent() {
       return;
     }
 
-    const capture = captureRef.current;
+    const capture = pipeline.activeCapture;
     if (
       phaseRef.current === 'listening' &&
       activeInputModeRef.current === 'tap' &&
@@ -593,25 +417,20 @@ export function useVoiceAgent() {
       return;
     }
 
-    await startCapture('tap', 'agent');
+    await startCapture('tap');
   }, [finishCaptureAndTranscribe, prepareForTurn, setAgentMode, startCapture]);
 
   const beginHoldToTalk = useCallback(async () => {
     if (agentModeEnabledRef.current || phaseRef.current !== 'idle') return;
     holdReleasePendingRef.current = false;
-    await startCapture('hold', 'agent');
+    await startCapture('hold');
   }, [startCapture]);
 
   const endHoldToTalk = useCallback(async () => {
-    if (
-      activeInputModeRef.current !== 'hold' &&
-      !transcriptionHoldRequestedRef.current
-    ) {
-      return;
-    }
+    if (activeInputModeRef.current !== 'hold') return;
     holdReleasePendingRef.current = true;
 
-    const capture = captureRef.current;
+    const capture = pipeline.activeCapture;
     if (phaseRef.current === 'listening' && capture) {
       await finishCaptureAndTranscribe(capture, turnGenerationRef.current);
     }
@@ -619,7 +438,7 @@ export function useVoiceAgent() {
 
   const enableAgentMode = useCallback(async () => {
     if (agentModeEnabledRef.current) return;
-    await startCapture('agent', 'agent');
+    await startCapture('agent');
   }, [startCapture]);
 
   const disableAgentMode = useCallback(async () => {
@@ -628,67 +447,13 @@ export function useVoiceAgent() {
     await prepareForTurn();
   }, [prepareForTurn, setAgentMode]);
 
-  const toggleTranscription = useCallback(async () => {
-    if (
-      phaseRef.current === 'listening' &&
-      activeInputModeRef.current === 'tap' &&
-      activePipelineModeRef.current === 'transcription' &&
-      captureRef.current
-    ) {
-      await finishCaptureAndTranscribe(
-        captureRef.current,
-        turnGenerationRef.current
-      );
-      return;
-    }
-    if (agentModeEnabledRef.current) {
-      setAgentMode(false);
-    }
-    let alreadyPrepared = false;
-    if (captureStartupRef.current !== null) {
-      const pendingStartup = captureStartupRef.current;
-      await prepareForTurn();
-      await pendingStartup.catch(() => undefined);
-      alreadyPrepared = true;
-    }
-    await startCapture('tap', 'transcription', alreadyPrepared);
-  }, [
-    finishCaptureAndTranscribe,
-    prepareForTurn,
-    setAgentMode,
-    startCapture
-  ]);
-
-  const beginTranscription = useCallback(async () => {
-    if (activePipelineModeRef.current === 'transcription') {
-      return;
-    }
-    transcriptionHoldRequestedRef.current = true;
-    holdReleasePendingRef.current = false;
-    try {
-      if (agentModeEnabledRef.current) {
-        setAgentMode(false);
-      }
-      let alreadyPrepared = false;
-      if (captureStartupRef.current !== null) {
-        const pendingStartup = captureStartupRef.current;
-        await prepareForTurn();
-        await pendingStartup.catch(() => undefined);
-        alreadyPrepared = true;
-      }
-      await startCapture('hold', 'transcription', alreadyPrepared);
-    } finally {
-      transcriptionHoldRequestedRef.current = false;
-    }
-  }, [prepareForTurn, setAgentMode, startCapture]);
-
   const cancelCurrentTurn = useCallback(() => {
     void (async () => {
       const shouldResumeAgent =
         agentModeEnabledRef.current && activeInputModeRef.current === 'agent';
       const generation = await prepareForTurn();
 
-      if (shouldResumeAgent && captureRef.current) {
+      if (shouldResumeAgent && pipeline.activeCapture) {
         await resumeAgentListening(generation);
       } else if (shouldResumeAgent) {
         setAgentMode(false);
@@ -754,17 +519,9 @@ export function useVoiceAgent() {
   useEffect(
     () => () => {
       turnGenerationRef.current += 1;
-      captureStartupAbortRef.current?.abort();
-      captureOpenAbortRef.current?.abort();
       turnAbortRef.current?.abort();
       turnAbortRef.current = null;
-      insertionSessionRef.current = null;
-      if (pillStatusTimerRef.current !== null) {
-        window.clearTimeout(pillStatusTimerRef.current);
-      }
-      const capture = captureRef.current;
-      captureRef.current = null;
-      if (capture) void capture.dispose();
+      void pipeline.dispose();
       cancelSpeech();
     },
     [cancelSpeech]
@@ -779,14 +536,11 @@ export function useVoiceAgent() {
     agentModeEnabled,
     currentSpeechVolume,
     audioFrequencies,
-    transcriptionPillStatus,
     toggleListening,
     beginHoldToTalk,
     endHoldToTalk,
     enableAgentMode,
     disableAgentMode,
-    toggleTranscription,
-    beginTranscription,
     submitTextTurn,
     toggleSpeechOutput,
     selectTheme,

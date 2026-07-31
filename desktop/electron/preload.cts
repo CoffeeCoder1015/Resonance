@@ -8,26 +8,23 @@ type RuntimeCommand =
   | 'end-hold-to-talk'
   | 'show-expanded';
 type RuntimeSnapshot = {
-  phase: string;
-  pillStatus: 'idle' | 'recording' | 'processing' | 'error';
-  elapsedSeconds: number;
   visualTheme: string;
 };
-type AudioLevel = {
-  active: boolean;
-  level: number;
-};
+type PillStatus = 'idle' | 'recording' | 'processing' | 'error';
 type InsertTextResult =
   | { status: 'inserted' }
   | { status: 'failed'; reason: string };
+type BeginTextInsertionResult =
+  | { status: 'ready'; sessionId: string }
+  | { status: 'unavailable'; reason: string };
 
 const CHANNELS = {
   getSnapshot: 'runtime:get-snapshot',
   publishSnapshot: 'runtime:publish-snapshot',
   snapshot: 'runtime:snapshot',
-  audioLevel: 'runtime:audio-level',
   command: 'runtime:command',
   pillHover: 'pill:hover',
+  pillStatus: 'pill:status',
   beginTextInsertion: 'insertion:begin',
   insertTextAtCaret: 'insertion:insert-at-caret'
 } as const;
@@ -44,14 +41,8 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
     ipcRenderer.on(CHANNELS.snapshot, handler);
     return () => ipcRenderer.removeListener(CHANNELS.snapshot, handler);
   },
-  publishAudioLevel: (level: AudioLevel) => {
-    ipcRenderer.send(CHANNELS.audioLevel, level);
-  },
-  subscribeAudioLevel: (listener: (level: AudioLevel) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, level: AudioLevel) =>
-      listener(level);
-    ipcRenderer.on(CHANNELS.audioLevel, handler);
-    return () => ipcRenderer.removeListener(CHANNELS.audioLevel, handler);
+  publishPillStatus: (status: PillStatus) => {
+    ipcRenderer.send(CHANNELS.pillStatus, status);
   },
   sendCommand: (command: RuntimeCommand) => {
     ipcRenderer.send(CHANNELS.command, command);
@@ -69,7 +60,7 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
     return () => ipcRenderer.removeListener(CHANNELS.pillHover, handler);
   },
   beginTextInsertion: () =>
-    ipcRenderer.invoke(CHANNELS.beginTextInsertion) as Promise<string>,
+    ipcRenderer.invoke(CHANNELS.beginTextInsertion) as Promise<BeginTextInsertionResult>,
   insertTextAtCaret: (sessionId: string, text: string) =>
     ipcRenderer.invoke(
       CHANNELS.insertTextAtCaret,

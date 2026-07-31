@@ -2,6 +2,9 @@ import { memo, useEffect, useMemo, useRef } from 'react';
 import type { PillStatus } from './pillPresentation';
 import {
   clampMicrophoneLevel,
+  FLAT_WAVEFORM_SCALE,
+  scaleWaveformTexture,
+  shapeMicrophoneLevel,
   smoothMicrophoneEnergy
 } from './pillWaveformSignal';
 
@@ -32,7 +35,9 @@ export const PillWaveform = memo(function PillWaveform({
   const containerRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
   const parameters = useMemo(createBars, []);
-  const current = useRef<number[]>(Array(BAR_COUNT).fill(0.1));
+  const current = useRef<number[]>(
+    Array(BAR_COUNT).fill(FLAT_WAVEFORM_SCALE)
+  );
   const microphoneLevelRef = useRef(0);
   const smoothedEnergyRef = useRef(0);
   statusRef.current = status;
@@ -45,7 +50,7 @@ export const PillWaveform = memo(function PillWaveform({
     const elements = Array.from(container.children) as HTMLDivElement[];
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       elements.forEach(element => {
-        element.style.transform = 'scaleY(0.12)';
+        element.style.transform = `scaleY(${FLAT_WAVEFORM_SCALE})`;
       });
       return;
     }
@@ -55,39 +60,31 @@ export const PillWaveform = memo(function PillWaveform({
       const activeStatus = statusRef.current;
       const values = current.current;
       const inputEnergy =
-        activeStatus === 'recording' ? microphoneLevelRef.current : 0;
+        activeStatus === 'recording'
+          ? shapeMicrophoneLevel(microphoneLevelRef.current)
+          : 0;
       smoothedEnergyRef.current = smoothMicrophoneEnergy(
         smoothedEnergyRef.current,
         inputEnergy
       );
 
       parameters.forEach((parameter, index) => {
-        let target: number;
-        if (activeStatus === 'recording') {
-          const burst = 0.5 + 0.5 * Math.sin(now * 0.0023 + index * 0.2);
+        let target = FLAT_WAVEFORM_SCALE;
+        if (activeStatus === 'recording' && smoothedEnergyRef.current > 0) {
           const wave =
             0.5 +
             0.32 * Math.sin(now * parameter.frequencyA + parameter.phaseA) +
             0.28 * Math.sin(now * parameter.frequencyB - parameter.phaseB);
           const noise =
-            0.5 + 0.5 * Math.sin(now * 0.011 * parameter.jitter + index * 1.7);
-          const pattern =
-            (0.3 + 0.5 * burst) *
-            (0.6 * wave + 0.4 * noise) *
-            parameter.envelope;
-          target = 0.08 + smoothedEnergyRef.current * (0.22 + 0.78 * pattern);
-        } else if (activeStatus === 'processing') {
-          target = 0.13 + 0.04 * Math.sin(now * 0.004 + index * 0.5);
-        } else {
-          target =
-            0.08 +
-            0.06 *
-              (0.5 + 0.5 * Math.sin(now * 0.0028 + index * 0.45)) *
-              parameter.envelope;
+            0.5 +
+            0.5 * Math.sin(now * 0.011 * parameter.jitter + index * 1.7);
+          const texture =
+            (0.6 * wave + 0.4 * noise) * parameter.envelope;
+          target = scaleWaveformTexture(texture, smoothedEnergyRef.current);
         }
 
-        const clamped = Math.max(0.05, Math.min(1, target));
-        values[index] += (clamped - values[index]) * (activeStatus === 'recording' ? 0.5 : 0.14);
+        values[index] +=
+          (target - values[index]) * (activeStatus === 'recording' ? 0.5 : 0.14);
         const element = elements[index];
         if (element) element.style.transform = `scaleY(${values[index].toFixed(3)})`;
       });
@@ -118,8 +115,8 @@ export const PillWaveform = memo(function PillWaveform({
         {parameters.map(({ index }) => (
           <div
             key={index}
-            className={`h-full w-1 origin-center rounded-[1px] transition-colors duration-300 ${color}`}
-            style={{ transform: 'scaleY(0.1)' }}
+            className={`h-full w-[2px] origin-center rounded-[1px] transition-colors duration-300 ${color}`}
+            style={{ transform: `scaleY(${FLAT_WAVEFORM_SCALE})` }}
           />
         ))}
       </div>

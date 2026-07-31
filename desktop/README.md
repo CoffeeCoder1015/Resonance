@@ -6,10 +6,11 @@ windows:
 - the existing expanded UI;
 - the persistent transparent transcription pill.
 
-The expanded renderer remains the single voice-runtime owner for this first
-slice. It publishes low-frequency lifecycle snapshots through the Electron main
-process. The pill sends intent commands back through main; it does not create a
-second microphone or transcription lifecycle.
+The expanded renderer and transcription pill each own an independent voice
+runtime. Each renderer acquires its own microphone stream, runs its own VAD and
+server-request lifecycle, and drives its own avatar. Electron IPC coordinates
+window state and text insertion, but does not relay microphone visualization
+data between the renderers.
 
 ## Development
 

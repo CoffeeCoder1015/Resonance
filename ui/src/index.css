@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+.desktop-window-drag-region {
+  -webkit-app-region: drag;
+}
+
 @layer base {
   * {
     font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

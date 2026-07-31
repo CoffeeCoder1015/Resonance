@@ -3,6 +3,7 @@ import { TranscriptionPill } from '../components/transcription-pill/Transcriptio
 import type { PillStatus } from '../components/transcription-pill/pillPresentation';
 import type { DesktopRuntimeSnapshot } from '../types/desktop';
 import type { VisualTheme } from '../types/voice';
+import { useTranscriptionPillRuntime } from './useTranscriptionPillRuntime';
 
 const STATUSES: PillStatus[] = [
   'idle',
@@ -12,9 +13,6 @@ const STATUSES: PillStatus[] = [
 ];
 const DEFAULT_THEME: VisualTheme = 'clay-blob';
 const DEFAULT_SNAPSHOT: DesktopRuntimeSnapshot = {
-  phase: 'idle',
-  pillStatus: 'idle',
-  elapsedSeconds: 0,
   visualTheme: DEFAULT_THEME
 };
 
@@ -63,32 +61,64 @@ function BrowserPillHarness() {
 function ElectronPillRenderer() {
   const bridge = window.resonanceDesktop!;
   const [snapshot, setSnapshot] = useState(DEFAULT_SNAPSHOT);
-  const [microphoneLevel, setMicrophoneLevel] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [hovered, setHovered] = useState(false);
+  const {
+    state,
+    status,
+    volume,
+    frequencies,
+    toggleTranscription,
+    beginTranscription,
+    endTranscription
+  } = useTranscriptionPillRuntime();
 
   useEffect(() => {
     void bridge.getSnapshot().then(setSnapshot);
     const unsubscribeSnapshot = bridge.subscribeSnapshot(setSnapshot);
-    const unsubscribeAudioLevel = bridge.subscribeAudioLevel(frame => {
-      setMicrophoneLevel(frame.active ? frame.level : 0);
-    });
     const unsubscribeHover = bridge.subscribePillHover(setHovered);
     return () => {
       unsubscribeSnapshot();
-      unsubscribeAudioLevel();
       unsubscribeHover();
     };
   }, [bridge]);
 
+  useEffect(() => {
+    bridge.publishPillStatus(status);
+  }, [bridge, status]);
+
+  useEffect(() => {
+    if (status !== 'recording') {
+      setElapsedSeconds(0);
+      return;
+    }
+    const timer = window.setInterval(
+      () => setElapsedSeconds(value => value + 1),
+      1000
+    );
+    return () => window.clearInterval(timer);
+  }, [status]);
+
+  useEffect(() => {
+    return bridge.subscribeCommand(command => {
+      if (command === 'toggle-transcription') void toggleTranscription();
+      if (command === 'begin-transcription') void beginTranscription();
+      if (command === 'end-transcription') void endTranscription();
+    });
+  }, [beginTranscription, bridge, endTranscription, toggleTranscription]);
+
   return (
     <PillStage>
       <TranscriptionPill
-        status={snapshot.pillStatus}
-        elapsedSeconds={snapshot.elapsedSeconds}
+        status={status}
+        elapsedSeconds={elapsedSeconds}
         visualTheme={snapshot.visualTheme}
-        microphoneLevel={microphoneLevel}
+        agentState={state}
+        volume={volume}
+        frequencies={frequencies}
+        microphoneLevel={volume}
         hovered={hovered}
-        onPrimaryAction={() => bridge.sendCommand('toggle-transcription')}
+        onPrimaryAction={() => void toggleTranscription()}
         onExpand={() => bridge.sendCommand('show-expanded')}
       />
     </PillStage>

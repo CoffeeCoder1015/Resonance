@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { AvatarCanvas } from './components/AvatarCanvas';
 import { TranscriptLog } from './components/TranscriptLog';
@@ -32,91 +32,24 @@ export function App() {
     agentModeEnabled,
     currentSpeechVolume,
     audioFrequencies,
-    transcriptionPillStatus,
     toggleListening,
     beginHoldToTalk,
     endHoldToTalk,
     enableAgentMode,
     disableAgentMode,
-    toggleTranscription,
-    beginTranscription,
     submitTextTurn,
     toggleSpeechOutput,
     selectTheme,
     stopAgentSpeech
   } = useVoiceAgent();
-  const [recordingElapsedSeconds, setRecordingElapsedSeconds] = useState(0);
-  const audioPublishRef = useRef({ active: false, lastSentAt: 0 });
-
-  useEffect(() => {
-    if (transcriptionPillStatus !== 'recording') {
-      setRecordingElapsedSeconds(0);
-      return;
-    }
-    const timer = window.setInterval(
-      () => setRecordingElapsedSeconds(value => value + 1),
-      1000
-    );
-    return () => window.clearInterval(timer);
-  }, [transcriptionPillStatus]);
-
   useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
 
     bridge.publishSnapshot({
-      phase,
-      pillStatus: transcriptionPillStatus,
-      elapsedSeconds: recordingElapsedSeconds,
       visualTheme
     });
-  }, [phase, recordingElapsedSeconds, transcriptionPillStatus, visualTheme]);
-
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-
-    const active = transcriptionPillStatus === 'recording';
-    if (!active) {
-      if (audioPublishRef.current.active) {
-        bridge.publishAudioLevel({ active: false, level: 0 });
-        audioPublishRef.current = { active: false, lastSentAt: 0 };
-      }
-      return;
-    }
-
-    const now = performance.now();
-    const shouldPublish =
-      !audioPublishRef.current.active ||
-      now - audioPublishRef.current.lastSentAt >= 50;
-    if (!shouldPublish) return;
-
-    bridge.publishAudioLevel({
-      active: true,
-      level:
-        active
-          ? Math.max(0, Math.min(1, currentSpeechVolume))
-          : 0
-    });
-    audioPublishRef.current = { active: true, lastSentAt: now };
-  }, [currentSpeechVolume, transcriptionPillStatus]);
-
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-    return bridge.subscribeCommand(command => {
-      if (command === 'toggle-transcription') void toggleTranscription();
-      if (command === 'begin-transcription') void beginTranscription();
-      if (command === 'end-transcription') void endHoldToTalk();
-      if (command === 'begin-hold-to-talk') void beginHoldToTalk();
-      if (command === 'end-hold-to-talk') void endHoldToTalk();
-    });
-  }, [
-    beginHoldToTalk,
-    beginTranscription,
-    endHoldToTalk,
-    toggleTranscription
-  ]);
+  }, [visualTheme]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -191,7 +124,7 @@ export function App() {
 
       <header
         aria-live="polite"
-        className="w-full pt-4 sm:pt-6 px-4 flex justify-center items-center z-20 pointer-events-none shrink-0"
+        className="desktop-window-drag-region w-full pt-4 sm:pt-6 px-4 flex justify-center items-center z-20 pointer-events-none shrink-0"
       >
         <div
           className={`flex items-center gap-2.5 px-4 py-1.5 rounded-full border-[3px] border-black ${statusInfo.badge} neo-shadow font-mono text-[11px] font-black uppercase tracking-widest text-black`}

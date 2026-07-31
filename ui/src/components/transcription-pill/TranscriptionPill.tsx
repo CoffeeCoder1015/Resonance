@@ -1,7 +1,11 @@
 import { memo, useState } from 'react';
 import { AvatarCanvas } from '../AvatarCanvas';
 import { cn } from '../../utils/cn';
-import { DESIGN_VARIANTS, type VisualTheme } from '../../types/voice';
+import {
+  DESIGN_VARIANTS,
+  type AgentState,
+  type VisualTheme
+} from '../../types/voice';
 import { PillWaveform } from './PillWaveform';
 import {
   formatPillElapsed,
@@ -14,6 +18,7 @@ export interface TranscriptionPillProps {
   status: PillStatus;
   elapsedSeconds?: number;
   visualTheme: VisualTheme;
+  agentState?: AgentState;
   volume?: number;
   frequencies?: Uint8Array;
   microphoneLevel?: number;
@@ -62,6 +67,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
   status,
   elapsedSeconds = 0,
   visualTheme,
+  agentState,
   volume = 0,
   frequencies = EMPTY_FREQUENCIES,
   microphoneLevel = 0,
@@ -75,8 +81,13 @@ export const TranscriptionPill = memo(function TranscriptionPill({
   const presentation = getPillPresentation(status);
   const avatarTheme =
     DESIGN_VARIANTS.find(variant => variant.id === visualTheme) ?? DESIGN_VARIANTS[0];
-  const agentState =
-    status === 'recording' ? 'listening' : status === 'processing' ? 'processing' : 'idle';
+  const resolvedAgentState =
+    agentState ??
+    (status === 'recording'
+      ? 'listening'
+      : status === 'processing'
+        ? 'processing'
+        : 'idle');
   const actionLabel = status === 'recording' ? 'Stop recording' : 'Start recording';
   const showStatusBadge = status !== 'idle' && status !== 'recording';
 
@@ -137,12 +148,11 @@ export const TranscriptionPill = memo(function TranscriptionPill({
         >
           <div className="absolute -inset-2">
             <AvatarCanvas
-              state={agentState}
+              state={resolvedAgentState}
               visualTheme={visualTheme}
               volume={volume}
               frequencies={frequencies}
               onAvatarClick={onExpand ?? onPrimaryAction}
-              preview
             />
           </div>
         </div>
@@ -183,7 +193,10 @@ export const TranscriptionPill = memo(function TranscriptionPill({
               isCompact ? 'w-0 opacity-0' : 'w-16 opacity-100'
             )}
           >
-            <PillWaveform status={status} microphoneLevel={microphoneLevel} />
+            <PillWaveform
+              status={status}
+              microphoneLevel={microphoneLevel}
+            />
           </div>
 
           <div className="flex shrink-0 items-center justify-center gap-2" aria-live="polite">

@@ -16,8 +16,9 @@ import { uIOhook, UiohookKey, type UiohookKeyboardEvent } from 'uiohook-napi';
 import {
   CHANNELS,
   DEFAULT_SNAPSHOT,
-  type AudioLevel,
+  type BeginTextInsertionResult,
   type InsertTextResult,
+  type PillStatus,
   type RuntimeCommand,
   type RuntimeSnapshot
 } from './contract.js';
@@ -53,6 +54,7 @@ let pillWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
 let snapshot: RuntimeSnapshot = DEFAULT_SNAPSHOT;
+let pillStatus: PillStatus = 'idle';
 let pillHovered = false;
 let pillHoverTimer: NodeJS.Timeout | null = null;
 let pillIgnoresMouseEvents = false;
@@ -72,6 +74,39 @@ const INSERTION_SESSION_MAX_AGE_MS = 10 * 60_000;
 interface StoredInsertionTarget {
   target: ForegroundTarget;
   createdAt: number;
+}
+
+function observeRenderer(label: 'desktop' | 'pill', window: BrowserWindow) {
+  const contents = window.webContents;
+
+  contents.on('did-finish-load', () => {
+    console.info(`[renderer:${label}] loaded ${contents.getURL()}`);
+  });
+  contents.on('console-message', details => {
+    const location = details.sourceId
+      ? ` (${details.sourceId}:${details.lineNumber})`
+      : '';
+    if (details.level === 'warning') {
+      console.warn(`[renderer:${label}] ${details.message}${location}`);
+    } else if (details.level === 'error') {
+      console.error(`[renderer:${label}] ${details.message}${location}`);
+    }
+  });
+  contents.on('preload-error', (_event, failedPreloadPath, error) => {
+    console.error(`[renderer:${label}:preload] ${failedPreloadPath}`, error);
+  });
+  contents.on('render-process-gone', (_event, details) => {
+    console.error(`[renderer:${label}:gone]`, details);
+  });
+  contents.on(
+    'did-fail-load',
+    (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      console.error(
+        `[renderer:${label}:load] ${errorCode} ${errorDescription} ${validatedURL}`
+      );
+    }
+  );
 }
 
 async function beginTextInsertion(): Promise<string> {
@@ -290,13 +325,13 @@ function installGlobalHotkey() {
     if (!trackHotkeyModifier(event.keycode, true) || globalHoldActive) return;
     if (pressedCtrlKeys.size === 0 || pressedMetaKeys.size === 0) return;
     globalHoldActive = true;
-    expandedWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
+    pillWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
   };
   const handleKeyUp = (event: UiohookKeyboardEvent) => {
     if (!trackHotkeyModifier(event.keycode, false) || !globalHoldActive) return;
     if (pressedCtrlKeys.size !== 0 || pressedMetaKeys.size !== 0) return;
     globalHoldActive = false;
-    expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
+    pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   };
 
   uIOhook.on('keydown', handleKeyDown);
@@ -310,7 +345,7 @@ function uninstallGlobalHotkey() {
   pressedMetaKeys.clear();
   if (globalHoldActive) {
     globalHoldActive = false;
-    expandedWindow?.webContents.send(CHANNELS.command, 'end-transcription');
+    pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   }
   uIOhook.stop();
 }
@@ -334,19 +369,19 @@ function startPillHoverTracking() {
     const cursor = screen.getCursorScreenPoint();
     const bounds = pillWindow.getBounds();
     const interactionWidth =
-      snapshot.pillStatus === 'idle'
+      pillStatus === 'idle'
         ? pillHovered
           ? HOVERED_IDLE_HIT_WIDTH
           : IDLE_PILL_HIT_WIDTH
         : ACTIVE_PILL_HIT_WIDTH;
     const interactionHeight =
-      snapshot.pillStatus === 'idle'
+      pillStatus === 'idle'
         ? pillHovered
           ? EXPANDED_PILL_HIT_HEIGHT
           : IDLE_PILL_HIT_HEIGHT
         : EXPANDED_PILL_HIT_HEIGHT;
     const interactionCenterOffsetX =
-      snapshot.pillStatus === 'idle' && !pillHovered
+      pillStatus === 'idle' && !pillHovered
         ? 0
         : EXPANDED_PILL_CENTER_OFFSET_X;
     const interactionLeft =
@@ -394,19 +429,35 @@ async function createTray() {
 
 function installIpc() {
   ipcMain.handle(CHANNELS.getSnapshot, () => snapshot);
-  ipcMain.handle(CHANNELS.beginTextInsertion, event => {
-    if (event.sender !== expandedWindow?.webContents) {
-      throw new Error('Text insertion may only be started by the main renderer.');
+  ipcMain.handle(CHANNELS.beginTextInsertion, async event => {
+    if (event.sender !== pillWindow?.webContents) {
+      return {
+        status: 'unavailable',
+        reason: 'Text insertion may only be started by the transcription pill.'
+      } satisfies BeginTextInsertionResult;
     }
-    return beginTextInsertion();
+    try {
+      return {
+        status: 'ready',
+        sessionId: await beginTextInsertion()
+      } satisfies BeginTextInsertionResult;
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : 'The insertion target is unavailable.';
+      console.warn(`[text-insertion] ${reason}`);
+      return {
+        status: 'unavailable',
+        reason
+      } satisfies BeginTextInsertionResult;
+    }
   });
   ipcMain.handle(
     CHANNELS.insertTextAtCaret,
     (event, sessionId: unknown, text: unknown) => {
-      if (event.sender !== expandedWindow?.webContents) {
+      if (event.sender !== pillWindow?.webContents) {
         return {
           status: 'failed',
-          reason: 'Text insertion may only be requested by the main renderer.'
+          reason: 'Text insertion may only be requested by the transcription pill.'
         } satisfies InsertTextResult;
       }
       return insertTextAtCaret(sessionId, text);
@@ -417,23 +468,10 @@ function installIpc() {
     snapshot = nextSnapshot;
     pillWindow?.webContents.send(CHANNELS.snapshot, snapshot);
   });
-  ipcMain.on(CHANNELS.audioLevel, (event, nextLevel: unknown) => {
-    if (event.sender !== expandedWindow?.webContents) return;
-    if (
-      typeof nextLevel !== 'object' ||
-      nextLevel === null ||
-      typeof (nextLevel as Partial<AudioLevel>).active !== 'boolean' ||
-      typeof (nextLevel as Partial<AudioLevel>).level !== 'number' ||
-      !Number.isFinite((nextLevel as Partial<AudioLevel>).level)
-    ) {
-      return;
-    }
-
-    const level: AudioLevel = {
-      active: (nextLevel as AudioLevel).active,
-      level: Math.max(0, Math.min(1, (nextLevel as AudioLevel).level))
-    };
-    pillWindow?.webContents.send(CHANNELS.audioLevel, level);
+  ipcMain.on(CHANNELS.pillStatus, (event, nextStatus: unknown) => {
+    if (event.sender !== pillWindow?.webContents) return;
+    if (!['idle', 'recording', 'processing', 'error'].includes(String(nextStatus))) return;
+    pillStatus = nextStatus as PillStatus;
   });
   ipcMain.on(CHANNELS.command, (event, command: RuntimeCommand) => {
     if (event.sender !== pillWindow?.webContents) return;
@@ -441,7 +479,6 @@ function installIpc() {
       showExpanded();
       return;
     }
-    expandedWindow?.webContents.send(CHANNELS.command, command);
   });
 }
 
@@ -449,6 +486,8 @@ async function loadWindows() {
   const preload = preloadPath(directory);
   expandedWindow = createExpandedWindow(preload);
   pillWindow = createPillWindow(preload);
+  observeRenderer('desktop', expandedWindow);
+  observeRenderer('pill', pillWindow);
 
   expandedWindow.on('close', event => {
     if (quitting) return;
