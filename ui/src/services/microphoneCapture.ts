@@ -84,7 +84,7 @@ export class MicrophoneCapture {
         onnxWASMBasePath: VAD_ASSET_PATH,
         positiveSpeechThreshold: 0.5,
         negativeSpeechThreshold: 0.35,
-        redemptionMs: 750,
+        redemptionMs: 1_200,
         preSpeechPadMs: 300,
         minSpeechMs: 250,
         submitUserSpeechOnPause: true,
