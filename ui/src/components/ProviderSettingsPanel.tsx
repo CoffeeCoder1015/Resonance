@@ -10,6 +10,7 @@ import {
   type ModeOption,
   type ResponseProviderOption
 } from '../services/backend';
+import { HotkeySettingsPanel } from './HotkeySettingsPanel';
 
 interface ProviderSettingsPanelProps {
   section: 'transcription' | 'agent';
@@ -143,6 +144,7 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
       )}
 
       {section === 'transcription' && (
+      <>
       <div className="rounded-[1.5rem] border-[3px] border-black bg-[#fff2a8] p-4 neo-shadow sm:p-5">
         <label htmlFor="asr-provider" className="mb-2 block text-sm font-black">
           Speech recognition
@@ -169,6 +171,8 @@ export function ProviderSettingsPanel({ section }: ProviderSettingsPanelProps) {
           Changing this unloads the active speech model and loads the selected model.
         </p>
       </div>
+      <HotkeySettingsPanel />
+      </>
       )}
 
       {section === 'agent' && (
