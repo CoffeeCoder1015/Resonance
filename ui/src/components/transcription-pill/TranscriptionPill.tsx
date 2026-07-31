@@ -107,7 +107,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
         }
       }}
       style={{
-        scale: 0.8,
+        scale: 0.65,
         filter: isCompact ? 'none' : 'drop-shadow(8px 8px 0 #000)',
         transition: `filter 180ms ${SPRING}`
       }}
