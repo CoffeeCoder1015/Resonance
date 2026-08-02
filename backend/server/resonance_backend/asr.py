@@ -6,6 +6,12 @@ import torch
 from transformers import pipeline
 
 
+try:
+    from faster_whisper import WhisperModel as _FasterWhisperModel
+except ImportError:
+    _FasterWhisperModel = None
+
+
 class AudioInput(TypedDict):
     array: object
     sampling_rate: int
@@ -58,6 +64,57 @@ class WhisperASR:
             raise RuntimeError("ASR pipeline returned an invalid result.")
 
         return text.strip()
+
+
+class FasterWhisperASR:
+    id = "faster-whisper"
+    label = "Faster Whisper"
+
+    def __init__(
+        self,
+        model: str = "small.en",
+        device: str = "cpu",
+        compute_type: str = "int8",
+        cpu_threads: int = 0,
+        beam_size: int = 1,
+    ) -> None:
+        self._model = model
+        self._device = device
+        self._compute_type = compute_type
+        self._cpu_threads = cpu_threads
+        self._beam_size = beam_size
+        self._whisper_model: Any | None = None
+        self._lock = Lock()
+
+    def load(self) -> None:
+        with self._lock:
+            if self._whisper_model is None:
+                if _FasterWhisperModel is None:
+                    raise RuntimeError("faster-whisper is not installed.")
+                self._whisper_model = _FasterWhisperModel(
+                    self._model,
+                    device=self._device,
+                    compute_type=self._compute_type,
+                    cpu_threads=self._cpu_threads,
+                )
+
+    def unload(self) -> None:
+        with self._lock:
+            self._whisper_model = None
+        _release_model_memory()
+
+    def transcribe(self, audio: AudioInput) -> str:
+        with self._lock:
+            if self._whisper_model is None:
+                raise RuntimeError("Faster Whisper ASR is not loaded.")
+            segments, _ = self._whisper_model.transcribe(
+                audio["array"],
+                beam_size=self._beam_size,
+                vad_filter=False,
+            )
+            text = " ".join(segment.text.strip() for segment in segments).strip()
+
+        return text
 
 
 def _release_model_memory() -> None:

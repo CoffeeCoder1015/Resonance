@@ -3,7 +3,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 from resonance_backend import app as app_module
-from resonance_backend.asr import ASRProvider, WhisperASR
+from resonance_backend.asr import (
+    ASRProvider,
+    FasterWhisperASR,
+    WhisperASR,
+)
 from resonance_backend.asr_providers import ASRRuntime
 
 
@@ -116,6 +120,79 @@ class ASRTests(unittest.TestCase):
         self.assertEqual(whisper.load.call_count, 2)
         self.assertEqual(runtime.current_id, "whisper")
 
+
+    @patch("resonance_backend.asr._FasterWhisperModel")
+    def test_faster_whisper_transcribes_audio(self, model_factory: Mock) -> None:
+        model = model_factory.return_value
+
+        def transcribe(
+            audio: object,
+            *,
+            beam_size: int,
+            vad_filter: bool,
+        ) -> tuple[object, Mock]:
+            del audio, beam_size, vad_filter
+            return iter([Mock(text="  Hello"), Mock(text="world. ")]), Mock()
+
+        model.transcribe = Mock(side_effect=transcribe)
+        provider = FasterWhisperASR()
+        provider.load()
+        audio = {
+            "array": object(),
+            "sampling_rate": 16_000,
+        }
+
+        self.assertEqual(provider.transcribe(audio), "Hello world.")
+        model_factory.assert_called_once_with(
+            "small.en",
+            device="cpu",
+            compute_type="int8",
+            cpu_threads=0,
+        )
+        model.transcribe.assert_called_once()
+        self.assertIs(model.transcribe.call_args.args[0], audio["array"])
+        self.assertEqual(model.transcribe.call_args.kwargs["beam_size"], 1)
+        self.assertIs(model.transcribe.call_args.kwargs["vad_filter"], False)
+
+    @patch("resonance_backend.asr._FasterWhisperModel", None)
+    def test_faster_whisper_requires_installation(self) -> None:
+        provider = FasterWhisperASR()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "faster-whisper is not installed.",
+        ):
+            provider.load()
+
+    @patch("resonance_backend.asr._FasterWhisperModel")
+    def test_faster_whisper_can_be_unloaded_and_reloaded(
+        self,
+        model_factory: Mock,
+    ) -> None:
+        provider = FasterWhisperASR()
+
+        provider.load()
+        provider.unload()
+        provider.load()
+
+        self.assertEqual(model_factory.call_count, 2)
+
+    @patch("resonance_backend.asr._FasterWhisperModel")
+    def test_faster_whisper_preserves_empty_output(self, model_factory: Mock) -> None:
+        model = model_factory.return_value
+        model.transcribe.return_value = (iter([]), Mock())
+        provider = FasterWhisperASR()
+        provider.load()
+
+        self.assertEqual(
+            provider.transcribe(
+                {
+                    "array": object(),
+                    "sampling_rate": 16_000,
+                }
+            ),
+            "",
+        )
 
 if __name__ == "__main__":
     unittest.main()

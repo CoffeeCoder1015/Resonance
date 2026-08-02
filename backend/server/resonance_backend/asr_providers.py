@@ -1,11 +1,24 @@
 from threading import Lock
 
-from resonance_backend.asr import ASRProvider, AudioInput, WhisperASR
+from resonance_backend.asr import (
+    ASRProvider,
+    AudioInput,
+    FasterWhisperASR,
+    WhisperASR,
+)
+
+
+def _build_providers() -> list[ASRProvider]:
+    providers = [WhisperASR(model="openai/whisper-base.en")]
+
+    providers.append(FasterWhisperASR())
+
+    return providers
 
 
 ASR_PROVIDERS: dict[str, ASRProvider] = {
     provider.id: provider
-    for provider in (WhisperASR(model="openai/whisper-base.en"),)
+    for provider in _build_providers()
 }
 
 
