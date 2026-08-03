@@ -91,7 +91,7 @@ class PipelineTests(unittest.TestCase):
             app_module.create_turn(
                 "Question",
                 BackgroundTasks(),
-                "gemma",
+                "passthrough",
                 "agent",
             )
 

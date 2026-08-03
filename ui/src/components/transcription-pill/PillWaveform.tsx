@@ -27,10 +27,12 @@ function createBars() {
 
 export const PillWaveform = memo(function PillWaveform({
   status,
-  microphoneLevel = 0
+  microphoneLevel = 0,
+  active = true
 }: {
   status: PillStatus;
   microphoneLevel?: number;
+  active?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
@@ -48,6 +50,12 @@ export const PillWaveform = memo(function PillWaveform({
     if (!container) return;
 
     const elements = Array.from(container.children) as HTMLDivElement[];
+    if (!active) {
+      elements.forEach(element => {
+        element.style.transform = `scaleY(${FLAT_WAVEFORM_SCALE})`;
+      });
+      return;
+    }
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       elements.forEach(element => {
         element.style.transform = `scaleY(${FLAT_WAVEFORM_SCALE})`;
@@ -94,7 +102,7 @@ export const PillWaveform = memo(function PillWaveform({
 
     frame = window.requestAnimationFrame(animate);
     return () => window.cancelAnimationFrame(frame);
-  }, [parameters]);
+  }, [active, parameters]);
 
   const color =
     status === 'recording'

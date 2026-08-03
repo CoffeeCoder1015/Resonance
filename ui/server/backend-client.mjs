@@ -41,6 +41,16 @@ export function createBackendClient({
       });
     },
 
+    async createAudioTranscription({ audio, contentType, filename, signal }) {
+      const form = new FormData();
+      form.append('file', new Blob([audio], { type: contentType }), filename);
+      return request('/v1/audio/transcriptions', {
+        method: 'POST',
+        body: form,
+        signal
+      });
+    },
+
     createTextTurn({ text, mode, signal }) {
       return request('/v1/text/turns', {
         method: 'POST',

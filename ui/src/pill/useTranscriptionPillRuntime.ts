@@ -35,6 +35,22 @@ export function useTranscriptionPillRuntime() {
   const holdRequestedRef = useRef(false);
   const errorTimerRef = useRef<number | null>(null);
 
+  const claimVoiceInput = useCallback(async () => {
+    const bridge = window.resonanceDesktop;
+    return bridge ? bridge.claimVoiceInput('pill') : true;
+  }, []);
+  const releaseVoiceInput = useCallback(() => {
+    window.resonanceDesktop?.releaseVoiceInput('pill');
+  }, []);
+  const cancelInsertionTarget = useCallback((target: InsertionTargetPromise | null) => {
+    if (!target) return;
+    void target.then(result => {
+      if ('sessionId' in result && result.sessionId) {
+        window.resonanceDesktop?.cancelTextInsertion(result.sessionId);
+      }
+    });
+  }, []);
+
   const setPhase = useCallback((nextPhase: VoicePhase) => {
     phaseRef.current = nextPhase;
     setPhaseValue(nextPhase);
@@ -63,6 +79,8 @@ export function useTranscriptionPillRuntime() {
     const generation = ++generationRef.current;
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
+    pipeline.cancelPendingCapture();
+    cancelInsertionTarget(insertionTargetRef.current);
     insertionTargetRef.current = null;
     holdReleasePendingRef.current = false;
     finishingRef.current = null;
@@ -75,7 +93,7 @@ export function useTranscriptionPillRuntime() {
     await pipeline.discardAndPause();
     setPhase('idle');
     return generation;
-  }, [pipeline, setPhase]);
+  }, [cancelInsertionTarget, pipeline, setPhase]);
 
   const finishAndTranscribe = useCallback(
     async (
@@ -98,6 +116,7 @@ export function useTranscriptionPillRuntime() {
 
       try {
         const audio = await pipeline.finish(capture);
+        releaseVoiceInput();
         if (generation !== generationRef.current) return;
         activeInputModeRef.current = null;
         if (!audio) {
@@ -142,6 +161,8 @@ export function useTranscriptionPillRuntime() {
         showError(error);
         setPhase('idle');
       } finally {
+        releaseVoiceInput();
+        cancelInsertionTarget(insertionTarget);
         if (requestAbortRef.current === abortController) {
           requestAbortRef.current = null;
         }
@@ -151,7 +172,7 @@ export function useTranscriptionPillRuntime() {
         if (finishingRef.current === capture) finishingRef.current = null;
       }
     },
-    [pipeline, setPhase, showError]
+    [cancelInsertionTarget, pipeline, releaseVoiceInput, setPhase, showError]
   );
 
   const start = useCallback(
@@ -163,7 +184,17 @@ export function useTranscriptionPillRuntime() {
         activeInputModeRef.current = mode;
         const bridge = window.resonanceDesktop;
         if (!bridge) {
+          activeInputModeRef.current = null;
           showError(new Error('Desktop integration is unavailable.'));
+          return;
+        }
+        if (!(await claimVoiceInput())) {
+          activeInputModeRef.current = null;
+          return;
+        }
+        if (generation !== generationRef.current) {
+          activeInputModeRef.current = null;
+          releaseVoiceInput();
           return;
         }
 
@@ -189,17 +220,12 @@ export function useTranscriptionPillRuntime() {
                 void finishAndTranscribe(capture, generation, insertionTarget);
               }
               else finishPending = true;
-            },
-            onMaxDuration: () => {
-              if (captureReady) {
-                void finishAndTranscribe(capture, generation, insertionTarget);
-              }
-              else finishPending = true;
             }
           });
         } catch (error) {
-          if (generation !== generationRef.current) return;
           activeInputModeRef.current = null;
+          releaseVoiceInput();
+          if (generation !== generationRef.current) return;
           showError(error);
           setPhase('idle');
           return;
@@ -209,6 +235,7 @@ export function useTranscriptionPillRuntime() {
 
         if (generation !== generationRef.current || !pipeline.owns(capture)) {
           await pipeline.discardAndPause(capture);
+          releaseVoiceInput();
           return;
         }
 
@@ -224,7 +251,15 @@ export function useTranscriptionPillRuntime() {
         if (startupRef.current === startup) startupRef.current = null;
       }
     },
-    [finishAndTranscribe, pipeline, prepare, setPhase, showError]
+    [
+      claimVoiceInput,
+      finishAndTranscribe,
+      pipeline,
+      prepare,
+      releaseVoiceInput,
+      setPhase,
+      showError
+    ]
   );
 
   const toggleTranscription = useCallback(async () => {
@@ -276,20 +311,32 @@ export function useTranscriptionPillRuntime() {
   }, [finishAndTranscribe, pipeline]);
 
   useEffect(() => {
-    void pipeline.ensureCapture().catch(error => {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
-      console.warn('Pill microphone warmup failed; the next action will retry.', error);
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return;
+    return bridge.subscribeVoiceInputRevoked(async () => {
+      generationRef.current += 1;
+      requestAbortRef.current?.abort();
+      requestAbortRef.current = null;
+      cancelInsertionTarget(insertionTargetRef.current);
+      insertionTargetRef.current = null;
+      activeInputModeRef.current = null;
+      holdReleasePendingRef.current = false;
+      setStatus('idle');
+      setPhase('idle');
+      await pipeline.pauseForHandoff();
     });
-  }, [pipeline]);
+  }, [cancelInsertionTarget, pipeline, setPhase]);
 
   useEffect(
     () => () => {
       generationRef.current += 1;
       requestAbortRef.current?.abort();
+      cancelInsertionTarget(insertionTargetRef.current);
+      releaseVoiceInput();
       if (errorTimerRef.current !== null) window.clearTimeout(errorTimerRef.current);
       void pipeline.dispose();
     },
-    [pipeline]
+    [cancelInsertionTarget, pipeline, releaseVoiceInput]
   );
 
   return {

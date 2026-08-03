@@ -1,5 +1,7 @@
 import {
+  createTextTurn,
   createVoiceTurn,
+  transcribeAudio,
   type PipelineMode,
   type Turn
 } from './backend';
@@ -72,18 +74,40 @@ export class VoicePipeline {
     return true;
   }
 
-  createTurn(
-    audio: Blob,
+  async createTurn(
+    audio: Blob | readonly Blob[],
     mode: PipelineMode,
     signal?: AbortSignal
   ): Promise<Turn> {
     this.assertActive();
-    return createVoiceTurn(audio, mode, signal);
+    if (!Array.isArray(audio) || audio.length === 1) {
+      return createVoiceTurn(Array.isArray(audio) ? audio[0] : audio, mode, signal);
+    }
+
+    const transcripts: string[] = [];
+    for (const chunk of audio) {
+      const transcript = (await transcribeAudio(chunk, signal)).trim();
+      if (transcript) transcripts.push(transcript);
+    }
+    return createTextTurn(transcripts.join(' '), mode, signal);
   }
 
   async discardAndPause(capture = this.captureValue) {
     if (!capture || !this.owns(capture)) return;
     await capture.discardAndPause();
+  }
+
+  cancelPendingCapture() {
+    this.openingAbort?.abort();
+  }
+
+  async pauseForHandoff() {
+    this.openingAbort?.abort();
+    const opening = this.opening;
+    if (opening) await opening.catch(() => undefined);
+
+    const capture = this.captureValue;
+    if (capture) await capture.discardAndPause();
   }
 
   async disposeCapture(capture: MicrophoneCapture) {

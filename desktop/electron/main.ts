@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   app,
@@ -26,7 +27,8 @@ import {
   type PillStatus,
   type RuntimeCommand,
   type RuntimeSnapshot,
-  type UpdateHotkeysResult
+  type UpdateHotkeysResult,
+  type VoiceInputOwner
 } from './contract.js';
 import { installAppProtocol } from './protocol.js';
 import {
@@ -40,6 +42,7 @@ import {
   pasteTextViaClipboard,
   type ForegroundTarget
 } from './windows-text-insertion.js';
+import { VoiceInputOwnership } from './voice-input-ownership.js';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -64,6 +67,16 @@ let pillStatus: PillStatus = 'idle';
 let pillHovered = false;
 let pillHoverTimer: NodeJS.Timeout | null = null;
 let pillIgnoresMouseEvents = false;
+let pillPositionSaveTimer: NodeJS.Timeout | null = null;
+let pendingPillPosition: PillPosition | null = null;
+let pillPositionWrite = Promise.resolve();
+let pillPositionFlush: Promise<void> | null = null;
+let quitAfterPillPositionSaved = false;
+let pillRequested = true;
+let rendererWindowsClosing = false;
+let expandedWindowLoad: Promise<BrowserWindow> | null = null;
+let pillWindowLoad: Promise<BrowserWindow> | null = null;
+const voiceInputOwnership = new VoiceInputOwnership();
 const insertionTargets = new Map<string, StoredInsertionTarget>();
 
 const IDLE_PILL_HIT_WIDTH = 48;
@@ -72,7 +85,11 @@ const HOVERED_IDLE_HIT_WIDTH = 184;
 const ACTIVE_PILL_HIT_WIDTH = 280;
 const EXPANDED_PILL_HIT_HEIGHT = 56;
 const EXPANDED_PILL_CENTER_OFFSET_X = -26;
-const INSERTION_SESSION_MAX_AGE_MS = 10 * 60_000;
+const PILL_POSITION_SAVE_DEBOUNCE_MS = 250;
+const HOVER_POLL_NEAR_MS = 50;
+const HOVER_POLL_MID_MS = 125;
+const HOVER_POLL_FAR_MS = 400;
+const VOICE_INPUT_REVOCATION_TIMEOUT_MS = 5_000;
 
 const MODIFIER_ORDER: Record<HotkeyModifier, number> = {
   ctrl: 0,
@@ -176,6 +193,8 @@ const KEY_KEYCODES = buildKeyKeycodes();
 let hotkeys: HotkeySettings = DEFAULT_HOTKEYS;
 let globalHotkeyActive = false;
 let globalHotkeyHookStarted = false;
+let globalHotkeyKeyDownListener: ((event: UiohookKeyboardEvent) => void) | null = null;
+let globalHotkeyKeyUpListener: ((event: UiohookKeyboardEvent) => void) | null = null;
 const pressedHotkeyKeycodes = new Set<number>();
 
 interface StoredInsertionTarget {
@@ -230,7 +249,6 @@ async function beginTextInsertion(): Promise<string> {
   }
 
   const sessionId = `insertion_${randomUUID()}`;
-  insertionTargets.clear();
   insertionTargets.set(sessionId, {
     target,
     createdAt: Date.now()
@@ -262,10 +280,6 @@ async function insertTextAtCaret(
       reason: 'The insertion session expired or was already used.'
     };
   }
-  if (Date.now() - stored.createdAt > INSERTION_SESSION_MAX_AGE_MS) {
-    return { status: 'failed', reason: 'The insertion session expired.' };
-  }
-
   try {
     console.info('[text-insertion] Insertion requested.', {
       sessionId,
@@ -275,27 +289,8 @@ async function insertTextAtCaret(
       expectedWindowHandle: stored.target.windowHandle,
       expectedProcessId: stored.target.processId
     });
-    const foreground = await getForegroundTarget();
-    console.info('[text-insertion] Foreground target checked.', {
-      expected: stored.target,
-      actual: foreground,
-      matches:
-        foreground?.windowHandle === stored.target.windowHandle &&
-        foreground?.processId === stored.target.processId
-    });
-    if (
-      !foreground ||
-      foreground.windowHandle !== stored.target.windowHandle ||
-      foreground.processId !== stored.target.processId
-    ) {
-      return {
-        status: 'failed',
-        reason: 'The active application changed before transcription completed.'
-      };
-    }
-
     const result = await pasteTextViaClipboard(stored.target, text);
-    console.info('[text-insertion] Native helper completed.', result);
+    console.info('[text-insertion] Python Windows integration completed.', result);
     if (result.status === 'inserted') {
       console.info('[text-insertion] Paste completed.', {
         clipboardRestore: result.clipboardRestore,
@@ -334,8 +329,7 @@ async function insertTextAtCaret(
     if (result.status === 'paste-timeout') {
       return {
         status: 'failed',
-        reason:
-          'Windows accepted the paste shortcut, but the target did not request the transcript from the clipboard.'
+        reason: 'Windows accepted the paste shortcut, but the target did not request the transcript.'
       };
     }
     return {
@@ -343,7 +337,7 @@ async function insertTextAtCaret(
       reason:
         result.nativeError === 0
           ? 'Windows blocked the paste shortcut, possibly because the target runs at a higher integrity level.'
-          : `Windows paste failed with error ${result.nativeError}. SendInput accepted ${result.diagnostics.sent ?? '?'} of ${result.diagnostics.requested ?? '4'} events using INPUT size ${result.diagnostics.inputSize ?? '?'} on a ${result.diagnostics.pointerSize === '8' ? '64-bit' : '32-bit'} process.`
+          : `Windows paste failed with error ${result.nativeError}. SendInput accepted ${result.diagnostics.sent ?? '?'} of ${result.diagnostics.requested ?? '4'} events using INPUT size ${result.diagnostics.inputSize ?? '?'} on a ${result.diagnostics.pointerSize === 8 ? '64-bit' : '32-bit'} process.`
     };
   } catch (error) {
     console.error('[text-insertion] Clipboard text insertion failed.', {
@@ -377,9 +371,41 @@ function readPillPosition(): PillPosition | null {
   }
 }
 
-function savePillPosition(window: BrowserWindow) {
+function pillPositionFor(window: BrowserWindow): PillPosition {
   const { x, y } = window.getBounds();
-  writeFileSync(pillPositionPath(), JSON.stringify({ x, y }));
+  return { x, y };
+}
+
+function persistPillPosition(position: PillPosition): Promise<void> {
+  const write = pillPositionWrite
+    .catch(() => undefined)
+    .then(() => writeFile(pillPositionPath(), JSON.stringify(position)));
+  pillPositionWrite = write.catch(error => {
+    console.warn('[pill-position] Could not persist the transcription pill position.', error);
+  });
+  return pillPositionWrite;
+}
+
+function schedulePillPositionSave(window: BrowserWindow) {
+  pendingPillPosition = pillPositionFor(window);
+  if (pillPositionSaveTimer) return;
+  pillPositionSaveTimer = setTimeout(() => {
+    pillPositionSaveTimer = null;
+    void flushPillPositionSave();
+  }, PILL_POSITION_SAVE_DEBOUNCE_MS);
+}
+
+function flushPillPositionSave(window?: BrowserWindow): Promise<void> {
+  if (window && windowIsUsable(window)) {
+    pendingPillPosition = pillPositionFor(window);
+  }
+  if (pillPositionSaveTimer) {
+    clearTimeout(pillPositionSaveTimer);
+    pillPositionSaveTimer = null;
+  }
+  const position = pendingPillPosition;
+  pendingPillPosition = null;
+  return position ? persistPillPosition(position) : pillPositionWrite;
 }
 
 function pillIsVisible(window: BrowserWindow) {
@@ -410,8 +436,7 @@ function rendererRoots() {
 }
 
 function showExpanded() {
-  expandedWindow?.show();
-  expandedWindow?.focus();
+  void resumeExpandedWindow();
 }
 
 function hotkeysPath() {
@@ -503,24 +528,24 @@ function applyHotkeys(settings: HotkeySettings) {
 
 function installGlobalHotkey() {
   if (globalHotkeyHookStarted) return;
-  globalHotkeyHookStarted = true;
 
-  const handleKeyDown = (event: UiohookKeyboardEvent) => {
+  globalHotkeyKeyDownListener = (event: UiohookKeyboardEvent) => {
     pressedHotkeyKeycodes.add(event.keycode);
     if (globalHotkeyActive || !comboIsHeld(hotkeys.globalHoldToTalk)) return;
     globalHotkeyActive = true;
     pillWindow?.webContents.send(CHANNELS.command, 'begin-transcription');
   };
-  const handleKeyUp = (event: UiohookKeyboardEvent) => {
+  globalHotkeyKeyUpListener = (event: UiohookKeyboardEvent) => {
     pressedHotkeyKeycodes.delete(event.keycode);
     if (!globalHotkeyActive || comboIsHeld(hotkeys.globalHoldToTalk)) return;
     globalHotkeyActive = false;
     pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
   };
 
-  uIOhook.on('keydown', handleKeyDown);
-  uIOhook.on('keyup', handleKeyUp);
+  uIOhook.on('keydown', globalHotkeyKeyDownListener);
+  uIOhook.on('keyup', globalHotkeyKeyUpListener);
   uIOhook.start();
+  globalHotkeyHookStarted = true;
   console.info(`Registered global hold-to-talk hotkey: ${describeCombo(hotkeys.globalHoldToTalk)}`);
 }
 
@@ -529,6 +554,15 @@ function uninstallGlobalHotkey() {
   if (globalHotkeyActive) {
     globalHotkeyActive = false;
     pillWindow?.webContents.send(CHANNELS.command, 'end-transcription');
+  }
+  if (!globalHotkeyHookStarted) return;
+  if (globalHotkeyKeyDownListener) {
+    uIOhook.off('keydown', globalHotkeyKeyDownListener);
+    globalHotkeyKeyDownListener = null;
+  }
+  if (globalHotkeyKeyUpListener) {
+    uIOhook.off('keyup', globalHotkeyKeyUpListener);
+    globalHotkeyKeyUpListener = null;
   }
   uIOhook.stop();
   globalHotkeyHookStarted = false;
@@ -546,9 +580,22 @@ function setPillIgnoresMouseEvents(ignoresMouseEvents: boolean) {
   pillWindow.setIgnoreMouseEvents(ignoresMouseEvents, { forward: true });
 }
 
+function distanceFromPillInteractionBounds(
+  cursor: Electron.Point,
+  left: number,
+  top: number,
+  width: number,
+  height: number
+) {
+  const horizontalDistance = Math.max(left - cursor.x, 0, cursor.x - (left + width));
+  const verticalDistance = Math.max(top - cursor.y, 0, cursor.y - (top + height));
+  return Math.hypot(horizontalDistance, verticalDistance);
+}
+
 function startPillHoverTracking() {
-  if (pillHoverTimer) clearInterval(pillHoverTimer);
-  pillHoverTimer = setInterval(() => {
+  if (pillHoverTimer) clearTimeout(pillHoverTimer);
+  const poll = () => {
+    pillHoverTimer = null;
     if (!pillWindow?.isVisible()) return;
     const cursor = screen.getCursorScreenPoint();
     const bounds = pillWindow.getBounds();
@@ -579,7 +626,29 @@ function startPillHoverTracking() {
 
     setPillIgnoresMouseEvents(!insideInteractionBounds);
     setPillHovered(insideInteractionBounds);
-  }, 50);
+    const distance = distanceFromPillInteractionBounds(
+      cursor,
+      interactionLeft,
+      interactionTop,
+      interactionWidth,
+      interactionHeight
+    );
+    const delay =
+      insideInteractionBounds || distance < 160
+        ? HOVER_POLL_NEAR_MS
+        : distance < 720
+          ? HOVER_POLL_MID_MS
+          : HOVER_POLL_FAR_MS;
+    pillHoverTimer = setTimeout(poll, delay);
+  };
+  poll();
+}
+
+function stopPillHoverTracking() {
+  if (pillHoverTimer) clearTimeout(pillHoverTimer);
+  pillHoverTimer = null;
+  pillHovered = false;
+  pillIgnoresMouseEvents = false;
 }
 
 async function createTray() {
@@ -591,13 +660,9 @@ async function createTray() {
       { label: 'Open Resonance', click: showExpanded },
       {
         label: 'Show transcription pill',
-        click: () => {
-          if (!pillWindow) return;
-          ensurePillVisible();
-          pillWindow.showInactive();
-        }
+        click: () => void showPill()
       },
-      { label: 'Hide transcription pill', click: () => pillWindow?.hide() },
+      { label: 'Hide transcription pill', click: destroyPillRenderer },
       { type: 'separator' },
       {
         label: 'Quit Resonance',
@@ -613,17 +678,91 @@ async function createTray() {
 
 function installIpc() {
   ipcMain.handle(CHANNELS.getSnapshot, () => snapshot);
+  const ownerForSender = (sender: Electron.WebContents): VoiceInputOwner | null => {
+    if (sender === expandedWindow?.webContents) return 'desktop';
+    if (sender === pillWindow?.webContents) return 'pill';
+    return null;
+  };
+  const windowForOwner = (owner: VoiceInputOwner) =>
+    owner === 'desktop' ? expandedWindow : pillWindow;
+  const pendingRevocations = new Map<
+    string,
+    {
+      sender: Electron.WebContents;
+      finish: (stopped: boolean) => void;
+    }
+  >();
+  const revokeVoiceInput = (owner: VoiceInputOwner): Promise<boolean> => {
+    const previousWindow = windowForOwner(owner);
+    if (!windowIsUsable(previousWindow) || previousWindow.webContents.isDestroyed()) {
+      return Promise.resolve(true);
+    }
+
+    const sender = previousWindow.webContents;
+    const requestId = randomUUID();
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = (stopped: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        sender.removeListener('destroyed', handleDestroyed);
+        pendingRevocations.delete(requestId);
+        resolve(stopped);
+      };
+      const handleDestroyed = () => finish(true);
+      const timeout = setTimeout(
+        () => finish(false),
+        VOICE_INPUT_REVOCATION_TIMEOUT_MS
+      );
+      pendingRevocations.set(requestId, { sender, finish });
+      sender.once('destroyed', handleDestroyed);
+      sender.send(CHANNELS.voiceInputRevoked, requestId);
+    });
+  };
+  ipcMain.on(CHANNELS.voiceInputRevokedAck, (event, requestId: unknown) => {
+    if (typeof requestId !== 'string') return;
+    const pending = pendingRevocations.get(requestId);
+    if (pending?.sender === event.sender) pending.finish(true);
+  });
+  ipcMain.handle(CHANNELS.claimVoiceInput, async (event, requestedOwner: unknown) => {
+    const owner = ownerForSender(event.sender);
+    if (!owner || requestedOwner !== owner) return false;
+    return voiceInputOwnership.claim(owner, revokeVoiceInput);
+  });
+  ipcMain.on(CHANNELS.releaseVoiceInput, (event, requestedOwner: unknown) => {
+    const owner = ownerForSender(event.sender);
+    if (owner && requestedOwner === owner) voiceInputOwnership.release(owner);
+  });
+  ipcMain.handle(CHANNELS.getWindowFocus, event => {
+    const expanded = expandedWindow;
+    return Boolean(
+      expanded &&
+      !expanded.isDestroyed() &&
+      event.sender === expanded.webContents &&
+      expanded.isFocused()
+    );
+  });
   ipcMain.handle(CHANNELS.beginTextInsertion, async event => {
-    if (event.sender !== pillWindow?.webContents) {
+    const sender = event.sender;
+    if (sender !== pillWindow?.webContents) {
       return {
         status: 'unavailable',
         reason: 'Text insertion may only be started by the transcription pill.'
       } satisfies BeginTextInsertionResult;
     }
     try {
+      const sessionId = await beginTextInsertion();
+      if (sender.isDestroyed() || sender !== pillWindow?.webContents) {
+        insertionTargets.delete(sessionId);
+        return {
+          status: 'unavailable',
+          reason: 'The transcription pill closed before the insertion target was captured.'
+        } satisfies BeginTextInsertionResult;
+      }
       return {
         status: 'ready',
-        sessionId: await beginTextInsertion()
+        sessionId
       } satisfies BeginTextInsertionResult;
     } catch (error) {
       const reason =
@@ -634,6 +773,10 @@ function installIpc() {
         reason
       } satisfies BeginTextInsertionResult;
     }
+  });
+  ipcMain.on(CHANNELS.cancelTextInsertion, (event, sessionId: unknown) => {
+    if (event.sender !== pillWindow?.webContents || typeof sessionId !== 'string') return;
+    insertionTargets.delete(sessionId);
   });
   ipcMain.handle(
     CHANNELS.insertTextAtCaret,
@@ -684,50 +827,178 @@ function installIpc() {
   });
 }
 
-async function loadWindows() {
-  const preload = preloadPath(directory);
-  expandedWindow = createExpandedWindow(preload);
-  pillWindow = createPillWindow(preload);
-  observeRenderer('desktop', expandedWindow);
-  observeRenderer('pill', pillWindow);
+function expandedRendererUrl() {
+  return process.env.RESONANCE_MAIN_DEV_URL ?? 'resonance://app/index.html';
+}
 
-  expandedWindow.on('close', event => {
-    if (quitting) return;
-    event.preventDefault();
-    expandedWindow?.hide();
-  });
-  pillWindow.on('close', event => {
-    if (quitting) return;
-    event.preventDefault();
-  });
-  pillWindow.on('moved', () => {
-    if (pillWindow) savePillPosition(pillWindow);
-  });
+function pillRendererUrl() {
+  return process.env.RESONANCE_PILL_DEV_URL ?? 'resonance://app/pill.html';
+}
 
-  const mainDevUrl = process.env.RESONANCE_MAIN_DEV_URL;
-  const pillDevUrl = process.env.RESONANCE_PILL_DEV_URL;
-  if (mainDevUrl && pillDevUrl) {
-    await Promise.all([
-      expandedWindow.loadURL(mainDevUrl),
-      pillWindow.loadURL(pillDevUrl)
-    ]);
-  } else {
-    await Promise.all([
-      expandedWindow.loadURL('resonance://app/index.html'),
-      pillWindow.loadURL('resonance://app/pill.html')
-    ]);
+function windowIsUsable(window: BrowserWindow | null): window is BrowserWindow {
+  return window !== null && !window.isDestroyed();
+}
+
+/** Destroy only the expanded renderer. The transcription pill is an
+ * independent feature with its own microphone, VAD, and WebGL lifecycle.
+ */
+function suspendExpandedToTray() {
+  if (rendererWindowsClosing || quitting) return;
+  rendererWindowsClosing = true;
+
+  const expanded = expandedWindow;
+  expandedWindow = null;
+  try {
+    if (windowIsUsable(expanded)) expanded.destroy();
+    console.info('[lifecycle] Suspended expanded renderer to tray.');
+  } finally {
+    voiceInputOwnership.release('desktop');
+    rendererWindowsClosing = false;
   }
+}
 
-  const savedPosition = readPillPosition();
-  if (savedPosition) {
-    pillWindow.setPosition(savedPosition.x, savedPosition.y, false);
+function destroyPillRenderer() {
+  pillRequested = false;
+  if (rendererWindowsClosing || !windowIsUsable(pillWindow)) return;
+  rendererWindowsClosing = true;
+  insertionTargets.clear();
+  stopPillHoverTracking();
+  uninstallGlobalHotkey();
+
+  const pill = pillWindow;
+  pillWindow = null;
+  try {
+    const flush = flushPillPositionSave(pill);
+    const pendingFlush = flush.finally(() => {
+      if (pillPositionFlush === pendingFlush) pillPositionFlush = null;
+    });
+    pillPositionFlush = pendingFlush;
+    pill.destroy();
+    console.info('[lifecycle] Destroyed transcription pill renderer.');
+  } finally {
+    voiceInputOwnership.release('pill');
+    rendererWindowsClosing = false;
+  }
+}
+
+async function ensureExpandedWindow(): Promise<BrowserWindow> {
+  if (windowIsUsable(expandedWindow)) return expandedWindow;
+  if (expandedWindowLoad) return expandedWindowLoad;
+
+  const window = createExpandedWindow(preloadPath(directory));
+  expandedWindow = window;
+  observeRenderer('desktop', window);
+  const publishWindowFocus = (focused: boolean) => {
+    if (expandedWindow === window && !window.webContents.isDestroyed()) {
+      window.webContents.send(CHANNELS.windowFocus, focused);
+    }
+  };
+  window.on('focus', () => publishWindowFocus(true));
+  window.on('blur', () => publishWindowFocus(false));
+  window.on('close', event => {
+    if (quitting || rendererWindowsClosing) return;
+    event.preventDefault();
+    suspendExpandedToTray();
+  });
+  window.on('closed', () => {
+    if (expandedWindow === window) {
+      expandedWindow = null;
+      voiceInputOwnership.release('desktop');
+    }
+  });
+  expandedWindowLoad = window
+    .loadURL(expandedRendererUrl())
+    .then(() => window)
+    .catch(error => {
+      if (expandedWindow === window) expandedWindow = null;
+      if (windowIsUsable(window)) window.destroy();
+      throw error;
+    })
+    .finally(() => {
+      expandedWindowLoad = null;
+    });
+  return expandedWindowLoad;
+}
+
+async function ensurePillWindow(): Promise<BrowserWindow> {
+  if (windowIsUsable(pillWindow)) return pillWindow;
+  if (pillWindowLoad) return pillWindowLoad;
+  if (pillPositionFlush) await pillPositionFlush;
+  if (windowIsUsable(pillWindow)) return pillWindow;
+  if (pillWindowLoad) return pillWindowLoad;
+
+  const window = createPillWindow(preloadPath(directory));
+  pillWindow = window;
+  observeRenderer('pill', window);
+  window.on('close', event => {
+    if (quitting || rendererWindowsClosing) return;
+    event.preventDefault();
+    destroyPillRenderer();
+  });
+  window.on('closed', () => {
+    if (pillWindow === window) {
+      pillWindow = null;
+      voiceInputOwnership.release('pill');
+    }
+  });
+  window.on('moved', () => {
+    if (pillWindow === window) schedulePillPositionSave(window);
+  });
+  pillWindowLoad = window
+    .loadURL(pillRendererUrl())
+    .then(() => {
+      if (pillWindow !== window || !windowIsUsable(window)) {
+        throw new Error('The transcription pill was closed before it finished loading.');
+      }
+      const savedPosition = readPillPosition();
+      if (savedPosition) {
+        window.setPosition(savedPosition.x, savedPosition.y, false);
+        ensurePillVisible();
+      } else {
+        positionPill(window);
+      }
+      startPillHoverTracking();
+      installGlobalHotkey();
+      return window;
+    })
+    .catch(error => {
+      if (pillWindow === window) pillWindow = null;
+      if (windowIsUsable(window)) window.destroy();
+      throw error;
+    })
+    .finally(() => {
+      pillWindowLoad = null;
+    });
+  return pillWindowLoad;
+}
+
+async function showPill() {
+  pillRequested = true;
+  try {
+    const window = await ensurePillWindow();
     ensurePillVisible();
-  } else {
-    positionPill(pillWindow);
+    window.showInactive();
+    startPillHoverTracking();
+  } catch (error) {
+    console.error('[lifecycle] Could not resume transcription pill.', error);
   }
-  startPillHoverTracking();
-  expandedWindow.show();
-  pillWindow.showInactive();
+}
+
+async function resumeExpandedWindow() {
+  try {
+    const expandedPromise = ensureExpandedWindow();
+    const pillPromise = pillRequested ? ensurePillWindow() : null;
+    const expanded = await expandedPromise;
+    expanded.show();
+    expanded.focus();
+    if (pillPromise) {
+      const pill = await pillPromise;
+      pill.showInactive();
+      startPillHoverTracking();
+    }
+  } catch (error) {
+    console.error('[lifecycle] Could not resume Resonance windows.', error);
+  }
 }
 
 function installPermissionPolicy() {
@@ -765,11 +1036,17 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', showExpanded);
-  app.on('before-quit', () => {
+  app.on('before-quit', event => {
+    if (quitAfterPillPositionSaved) return;
     quitting = true;
     insertionTargets.clear();
-    if (pillHoverTimer) clearInterval(pillHoverTimer);
+    stopPillHoverTracking();
     uninstallGlobalHotkey();
+    event.preventDefault();
+    void flushPillPositionSave(pillWindow ?? undefined).finally(() => {
+      quitAfterPillPositionSaved = true;
+      app.quit();
+    });
   });
   app.on('window-all-closed', () => {
     // The tray process owns application lifetime; only the explicit tray Quit exits.
@@ -785,7 +1062,7 @@ if (!hasSingleInstanceLock) {
     screen.on('display-added', ensurePillVisible);
     screen.on('display-removed', ensurePillVisible);
     screen.on('display-metrics-changed', ensurePillVisible);
-    await loadWindows();
-    installGlobalHotkey();
+    await resumeExpandedWindow();
   });
+  app.on('activate', showExpanded);
 }

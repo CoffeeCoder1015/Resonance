@@ -26,6 +26,7 @@ type HotkeySettings = {
 type UpdateHotkeysResult =
   | { status: 'ok'; settings: HotkeySettings }
   | { status: 'failed'; reason: string };
+type VoiceInputOwner = 'desktop' | 'pill';
 
 const CHANNELS = {
   getSnapshot: 'runtime:get-snapshot',
@@ -34,7 +35,14 @@ const CHANNELS = {
   command: 'runtime:command',
   pillHover: 'pill:hover',
   pillStatus: 'pill:status',
+  claimVoiceInput: 'voice-input:claim',
+  releaseVoiceInput: 'voice-input:release',
+  voiceInputRevoked: 'voice-input:revoked',
+  voiceInputRevokedAck: 'voice-input:revoked-ack',
+  getWindowFocus: 'desktop:get-window-focus',
+  windowFocus: 'desktop:window-focus',
   beginTextInsertion: 'insertion:begin',
+  cancelTextInsertion: 'insertion:cancel',
   insertTextAtCaret: 'insertion:insert-at-caret',
   getHotkeys: 'hotkeys:get',
   updateHotkeys: 'hotkeys:update'
@@ -55,6 +63,22 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
   publishPillStatus: (status: PillStatus) => {
     ipcRenderer.send(CHANNELS.pillStatus, status);
   },
+  claimVoiceInput: (owner: VoiceInputOwner) =>
+    ipcRenderer.invoke(CHANNELS.claimVoiceInput, owner) as Promise<boolean>,
+  releaseVoiceInput: (owner: VoiceInputOwner) => {
+    ipcRenderer.send(CHANNELS.releaseVoiceInput, owner);
+  },
+  subscribeVoiceInputRevoked: (listener: () => void | Promise<void>) => {
+    const handler = async (_event: Electron.IpcRendererEvent, requestId: string) => {
+      try {
+        await listener();
+      } finally {
+        ipcRenderer.send(CHANNELS.voiceInputRevokedAck, requestId);
+      }
+    };
+    ipcRenderer.on(CHANNELS.voiceInputRevoked, handler);
+    return () => ipcRenderer.removeListener(CHANNELS.voiceInputRevoked, handler);
+  },
   sendCommand: (command: RuntimeCommand) => {
     ipcRenderer.send(CHANNELS.command, command);
   },
@@ -70,8 +94,19 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
     ipcRenderer.on(CHANNELS.pillHover, handler);
     return () => ipcRenderer.removeListener(CHANNELS.pillHover, handler);
   },
+  getWindowFocus: () =>
+    ipcRenderer.invoke(CHANNELS.getWindowFocus) as Promise<boolean>,
+  subscribeWindowFocus: (listener: (focused: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, focused: boolean) =>
+      listener(focused);
+    ipcRenderer.on(CHANNELS.windowFocus, handler);
+    return () => ipcRenderer.removeListener(CHANNELS.windowFocus, handler);
+  },
   beginTextInsertion: () =>
     ipcRenderer.invoke(CHANNELS.beginTextInsertion) as Promise<BeginTextInsertionResult>,
+  cancelTextInsertion: (sessionId: string) => {
+    ipcRenderer.send(CHANNELS.cancelTextInsertion, sessionId);
+  },
   insertTextAtCaret: (sessionId: string, text: string) =>
     ipcRenderer.invoke(
       CHANNELS.insertTextAtCaret,
