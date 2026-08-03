@@ -9,12 +9,6 @@ interface AvatarCanvasProps {
   frequencies: Uint8Array;
   onAvatarClick?: () => void;
   preview?: boolean;
-  /**
-   * Whether this surface is currently visible enough to warrant an animation
-   * loop. The scene stays allocated while inactive so resuming never rebuilds
-   * its WebGL resources.
-   */
-  active?: boolean;
 }
 
 interface NBody {
@@ -50,16 +44,13 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   volume,
   frequencies,
   onAvatarClick,
-  preview = false,
-  active = true
+  preview = false
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const startAnimationRef = useRef<() => void>(() => {});
-  const stopAnimationRef = useRef<() => void>(() => {});
 
   // Seed 1: Ceramic Clay
   const clayMeshRef = useRef<THREE.Mesh | null>(null);
@@ -102,16 +93,6 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   freqsRef.current = frequencies;
   const volumeRef = useRef<number>(volume);
   volumeRef.current = volume;
-  const activeRef = useRef<boolean>(active);
-  activeRef.current = active;
-
-  // This effect only starts or cancels an existing loop. Scene construction
-  // belongs to the mount effect below, so toggling activity never churns GPU
-  // resources or discards live audio/state refs.
-  useEffect(() => {
-    if (active) startAnimationRef.current();
-    else stopAnimationRef.current();
-  }, [active]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -440,26 +421,8 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     const upVec = new THREE.Vector3(0, 1, 0);
     const dirVec = new THREE.Vector3();
 
-    let disposed = false;
-    let isAnimating = false;
-
-    const stopAnimation = () => {
-      if (!isAnimating) return;
-      isAnimating = false;
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
-    };
-
     // ---------- 60FPS Animation Loop ----------
     const animate = () => {
-      animationFrameRef.current = null;
-      if (disposed) {
-        isAnimating = false;
-        return;
-      }
-
       timeRef.current += 0.016;
       const t = timeRef.current;
       const activeTheme = themeRef.current;
@@ -751,30 +714,15 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
       }
 
       renderer.render(scene, camera);
-      if (activeRef.current && !disposed) {
-        animationFrameRef.current = requestAnimationFrame(animate);
-      } else {
-        isAnimating = false;
-      }
+      animationFrameRef.current = requestAnimationFrame(animate);
     };
 
-    const startAnimation = () => {
-      if (disposed || isAnimating) return;
-      isAnimating = true;
-      animate();
-    };
-
-    startAnimationRef.current = startAnimation;
-    stopAnimationRef.current = stopAnimation;
-    startAnimation();
+    animate();
 
     return () => {
-      disposed = true;
-      stopAnimation();
-      startAnimationRef.current = () => {};
-      stopAnimationRef.current = () => {};
       window.removeEventListener('resize', handleResize);
       resizeObserver.disconnect();
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
 
       const disposedTextures = new Set<THREE.Texture>();
       const disposeMaterial = (material: THREE.Material) => {

@@ -89,21 +89,6 @@ export function createVoiceTurn(
   });
 }
 
-export async function transcribeAudio(
-  audio: Blob,
-  signal?: AbortSignal
-): Promise<string> {
-  const result = await requestJson<{ transcript: string }>('/api/audio/transcriptions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': audio.type || 'application/octet-stream'
-    },
-    body: audio,
-    signal
-  });
-  return result.transcript;
-}
-
 export function createTextTurn(
   text: string,
   mode: PipelineMode,

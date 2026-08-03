@@ -13,8 +13,7 @@ dependencies = [
     "soundfile==0.14.0",
     "torch==2.13.0",
     "transformers==5.14.1",
-    "uvicorn==0.51.0",
-    "pywin32==312; sys_platform == 'win32'"
+    "uvicorn==0.51.0"
 ]
 
 [tool.uv]

@@ -10,7 +10,7 @@ from resonance_backend.provider_ids import (
 )
 
 DEFAULT_AGENT_PROVIDER = "opencode"
-DEFAULT_TRANSCRIPTION_PROVIDER = "lfm-transcription"
+DEFAULT_TRANSCRIPTION_PROVIDER = "passthrough"
 DEFAULT_ASR_PROVIDER = "whisper"
 CONFIG_PATH = Path(
     os.environ.get(

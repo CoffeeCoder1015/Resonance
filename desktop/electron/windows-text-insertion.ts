@@ -1,127 +1,186 @@
-const WINDOWS_API_TIMEOUT_MS = 10_000;
-const BACKEND_ORIGIN = process.env.RESONANCE_BACKEND_ORIGIN || 'http://127.0.0.1:8000';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const NATIVE_HELPER_TIMEOUT_MS = 10_000;
+const CLIPBOARD_RESTORE_DELAY_MS = 100;
+const directory = path.dirname(fileURLToPath(import.meta.url));
 
 export interface ForegroundTarget {
   windowHandle: string;
   processId: number;
 }
 
-type ClipboardRestore = 'restored' | 'empty' | 'skipped' | 'failed';
-type InsertionStatus =
-  | 'inserted'
-  | 'modifiers-held'
-  | 'target-changed'
-  | 'clipboard-failed'
-  | 'paste-timeout'
-  | 'paste-failed'
-  | 'restore-failed';
+export type NativeInsertionDiagnostics = Record<string, string>;
 
-export interface NativeInsertionResult {
-  status: InsertionStatus;
-  clipboardRestore: ClipboardRestore;
-  nativeError: number;
-  diagnostics: Record<string, number>;
+export type NativeInsertionResult = (
+  | {
+      status: 'inserted';
+      clipboardRestore: 'restored' | 'skipped';
+    }
+  | { status: 'modifiers-held' }
+  | { status: 'target-changed' }
+  | { status: 'clipboard-failed'; nativeError: number }
+  | { status: 'restore-failed'; nativeError: number }
+  | { status: 'paste-timeout'; nativeError: number }
+  | { status: 'send-failed'; nativeError: number }
+) & { diagnostics: NativeInsertionDiagnostics };
+
+interface NativeHelperResult {
+  stdout: string;
+  stderr: string;
 }
 
-interface ForegroundTargetResponse {
-  target: ForegroundTarget | null;
-}
-
-async function requestWindowsApi<T>(
-  pathname: string,
-  options?: RequestInit
-): Promise<T> {
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), WINDOWS_API_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(new URL(pathname, BACKEND_ORIGIN), {
-      ...options,
-      signal: abortController.signal
-    });
-    const result = (await response.json().catch(() => null)) as
-      | T
-      | { detail?: string }
-      | null;
-    if (!response.ok) {
-      const detail =
-        result && typeof result === 'object' && 'detail' in result
-          ? result.detail
-          : undefined;
-      throw new Error(detail || `Windows integration returned ${response.status}.`);
-    }
-    if (!result || typeof result !== 'object') {
-      throw new Error('Windows integration returned an invalid response.');
-    }
-    return result as T;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error('Windows integration timed out.');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+function nativeHelperPath() {
+  const runningAsPackagedElectron =
+    Boolean(process.versions.electron) && !process.defaultApp;
+  if (runningAsPackagedElectron) {
+    return path.join(
+      process.resourcesPath,
+      'app',
+      'native',
+      'resonance-paste.exe'
+    );
   }
+  return path.resolve(directory, '..', 'native', 'bin', 'resonance-paste.exe');
+}
+
+function runNativeHelper(
+  args: string[],
+  stdinText = ''
+): Promise<NativeHelperResult> {
+  return new Promise((resolve, reject) => {
+    const helper = nativeHelperPath();
+    const child = spawn(helper, args, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, NATIVE_HELPER_TIMEOUT_MS);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', error => {
+      finish(() => {
+        reject(
+          error.message.includes('ENOENT')
+            ? new Error(
+                `The native text-insertion helper is missing at ${helper}. Run npm run build in the desktop directory.`
+              )
+            : error
+        );
+      });
+    });
+    child.once('close', code => {
+      finish(() => {
+        if (timedOut) {
+          reject(new Error('The native clipboard insertion helper timed out.'));
+          return;
+        }
+        if (code !== 0) {
+          reject(
+            new Error(
+              `The native clipboard helper exited with code ${code}: ${stderr.trim() || 'No error output.'}`
+            )
+          );
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+    });
+
+    child.stdin.end(stdinText, 'utf8');
+  });
+}
+
+function parseDiagnostics(fields: string[]): NativeInsertionDiagnostics {
+  return Object.fromEntries(
+    fields.map(field => {
+      const separator = field.indexOf('=');
+      return separator === -1
+        ? [field, '']
+        : [field.slice(0, separator), field.slice(separator + 1)];
+    })
+  );
 }
 
 export async function getForegroundTarget(): Promise<ForegroundTarget | null> {
   if (process.platform !== 'win32') return null;
-  const result = await requestWindowsApi<ForegroundTargetResponse>(
-    '/v1/windows/foreground-target'
-  );
-  const target = result.target;
-  if (target === null) return null;
-  if (
-    typeof target !== 'object' ||
-    typeof target.windowHandle !== 'string' ||
-    !/^[1-9]\d*$/.test(target.windowHandle) ||
-    !Number.isSafeInteger(target.processId) ||
-    target.processId <= 0
-  ) {
-    throw new Error('Windows integration returned an invalid foreground target.');
+
+  const { stdout, stderr } = await runNativeHelper(['--foreground']);
+  if (stderr.trim()) {
+    console.warn('[text-insertion] Native foreground helper stderr:', stderr.trim());
   }
-  return target;
+  const match = stdout.trim().match(/^(-?\d+):(\d+)$/);
+  if (!match || match[1] === '0') return null;
+  return {
+    windowHandle: match[1],
+    processId: Number(match[2])
+  };
 }
 
 export async function pasteTextViaClipboard(
   target: ForegroundTarget,
   text: string
 ): Promise<NativeInsertionResult> {
-  if (process.platform !== 'win32') {
-    throw new Error('Clipboard text insertion is currently supported on Windows only.');
-  }
-  if (!/^[1-9]\d*$/.test(target.windowHandle) || !Number.isSafeInteger(target.processId)) {
+  if (!/^-?\d+$/.test(target.windowHandle)) {
     throw new Error('The captured Windows target is invalid.');
   }
 
-  const result = await requestWindowsApi<NativeInsertionResult>(
-    '/v1/windows/insert-text',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        window_handle: target.windowHandle,
-        process_id: target.processId,
-        text
-      })
-    }
+  const { stdout, stderr } = await runNativeHelper(
+    [
+      '--paste',
+      '--window',
+      target.windowHandle,
+      '--restore-delay',
+      CLIPBOARD_RESTORE_DELAY_MS.toString()
+    ],
+    text
   );
-  if (
-    ![
-      'inserted',
-      'modifiers-held',
-      'target-changed',
-      'clipboard-failed',
-      'paste-timeout',
-      'paste-failed',
-      'restore-failed'
-    ].includes(result.status) ||
-    !['restored', 'empty', 'skipped', 'failed'].includes(result.clipboardRestore) ||
-    !Number.isSafeInteger(result.nativeError) ||
-    !result.diagnostics ||
-    typeof result.diagnostics !== 'object'
-  ) {
-    throw new Error('Windows integration returned an invalid insertion result.');
+  if (stderr.trim()) {
+    console.info('[text-insertion] Native helper trace:\n' + stderr.trim());
   }
-  return result;
+
+  const [result, ...diagnosticFields] = stdout.trim().split('|');
+  const [status, rawValue] = result.split(':', 2);
+  const diagnostics = parseDiagnostics(diagnosticFields);
+  const value = Number(rawValue);
+
+  if (status === 'inserted' && rawValue === 'restored') {
+    return { status, clipboardRestore: 'restored', diagnostics };
+  }
+  if (status === 'inserted' && rawValue === 'restore-skipped') {
+    return { status, clipboardRestore: 'skipped', diagnostics };
+  }
+  if (status === 'target-changed' || status === 'modifiers-held') {
+    return { status, diagnostics };
+  }
+  if (
+    (status === 'clipboard-failed' ||
+      status === 'restore-failed' ||
+      status === 'paste-timeout' ||
+      status === 'send-failed') &&
+    Number.isSafeInteger(value)
+  ) {
+    return { status, nativeError: value, diagnostics };
+  }
+  throw new Error(`Windows returned an invalid insertion result: ${stdout.trim()}`);
 }

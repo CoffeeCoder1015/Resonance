@@ -1,11 +1,6 @@
 import asyncio
 import unittest
-from io import BytesIO
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
-
-import numpy
-from fastapi import HTTPException
 
 from resonance_backend import app as app_module
 from resonance_backend.asr import (
@@ -17,67 +12,6 @@ from resonance_backend.asr_providers import ASRRuntime
 
 
 class ASRTests(unittest.TestCase):
-    def test_transcribe_rejects_an_oversized_raw_upload_before_decoding(self) -> None:
-        oversized_file = Mock()
-        oversized_file.tell.return_value = app_module.MAX_AUDIO_BYTES + 1
-        upload = SimpleNamespace(file=oversized_file)
-
-        with patch.object(app_module.soundfile, "SoundFile") as open_audio:
-            with self.assertRaises(HTTPException) as context:
-                app_module.transcribe(upload)
-
-        self.assertEqual(context.exception.status_code, 413)
-        self.assertEqual(context.exception.detail, "Audio recording is too large.")
-        open_audio.assert_not_called()
-
-    def test_transcribe_processes_long_audio_in_bounded_chunks(self) -> None:
-        upload = SimpleNamespace(file=BytesIO(b"audio"))
-        with (
-            patch.object(app_module.soundfile, "SoundFile") as open_audio,
-            patch.object(app_module.asr_runtime, "transcribe") as transcribe_chunk,
-        ):
-            audio_file = open_audio.return_value.__enter__.return_value
-            open_audio.return_value = audio_file
-            audio_file.__enter__.return_value = audio_file
-            audio_file.frames = app_module.TRANSCRIPTION_CHUNK_FRAMES + 1
-            audio_file.samplerate = app_module.SAMPLE_RATE
-            audio_file.channels = 1
-            audio_file.read.side_effect = [
-                numpy.ones((2, 1), dtype="float32"),
-                numpy.ones((1, 1), dtype="float32"),
-                numpy.empty((0, 1), dtype="float32"),
-            ]
-            transcribe_chunk.side_effect = [" First chunk. ", "Second chunk."]
-
-            transcript = app_module.transcribe(upload)
-
-        self.assertEqual(transcript, "First chunk. Second chunk.")
-        self.assertEqual(audio_file.read.call_count, 3)
-        audio_file.read.assert_called_with(
-            frames=app_module.TRANSCRIPTION_CHUNK_FRAMES,
-            dtype="float32",
-            always_2d=True,
-        )
-        self.assertEqual(transcribe_chunk.call_count, 2)
-
-    def test_transcribe_rejects_excessive_channels_before_reading(self) -> None:
-        upload = SimpleNamespace(file=BytesIO(b"audio"))
-        with patch.object(app_module.soundfile, "SoundFile") as open_audio:
-            audio_file = open_audio.return_value
-            audio_file.frames = 1
-            audio_file.samplerate = app_module.SAMPLE_RATE
-            audio_file.channels = app_module.MAX_AUDIO_CHANNELS + 1
-
-            with self.assertRaises(HTTPException) as context:
-                app_module.transcribe(upload)
-
-        self.assertEqual(context.exception.status_code, 422)
-        self.assertEqual(
-            context.exception.detail,
-            "Audio recording must have no more than 2 channels.",
-        )
-        audio_file.read.assert_not_called()
-
     @patch("resonance_backend.asr.pipeline")
     def test_whisper_transcribes_audio(self, pipeline_factory: Mock) -> None:
         transcriber = pipeline_factory.return_value

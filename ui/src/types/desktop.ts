@@ -13,8 +13,6 @@ export type DesktopRuntimeCommand =
   | 'end-hold-to-talk'
   | 'show-expanded';
 
-export type VoiceInputOwner = 'desktop' | 'pill';
-
 export type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 
 export type HotkeyKey =
@@ -71,16 +69,10 @@ export interface ResonanceDesktopBridge {
   publishSnapshot(snapshot: DesktopRuntimeSnapshot): void;
   subscribeSnapshot(listener: (snapshot: DesktopRuntimeSnapshot) => void): () => void;
   publishPillStatus(status: PillStatus): void;
-  claimVoiceInput(owner: VoiceInputOwner): Promise<boolean>;
-  releaseVoiceInput(owner: VoiceInputOwner): void;
-  subscribeVoiceInputRevoked(listener: () => void | Promise<void>): () => void;
   sendCommand(command: DesktopRuntimeCommand): void;
   subscribeCommand(listener: (command: DesktopRuntimeCommand) => void): () => void;
   subscribePillHover(listener: (hovered: boolean) => void): () => void;
-  getWindowFocus(): Promise<boolean>;
-  subscribeWindowFocus(listener: (focused: boolean) => void): () => void;
   beginTextInsertion(): Promise<BeginTextInsertionResult>;
-  cancelTextInsertion(sessionId: string): void;
   insertTextAtCaret(
     sessionId: string,
     text: string

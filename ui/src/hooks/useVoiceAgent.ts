@@ -73,13 +73,6 @@ export function useVoiceAgent() {
   }, []);
 
   const ensureCapture = useCallback(() => pipeline.ensureCapture(), [pipeline]);
-  const claimVoiceInput = useCallback(async () => {
-    const bridge = window.resonanceDesktop;
-    return bridge ? bridge.claimVoiceInput('desktop') : true;
-  }, []);
-  const releaseVoiceInput = useCallback(() => {
-    window.resonanceDesktop?.releaseVoiceInput('desktop');
-  }, []);
 
   const state = voicePhaseToAgentState(phase);
   const analyser = pipeline.analyser;
@@ -104,7 +97,6 @@ export function useVoiceAgent() {
     turnAbortRef.current?.abort();
     turnAbortRef.current = null;
     cancelSpeech();
-    pipeline.cancelPendingCapture();
 
     const capture = pipeline.activeCapture;
     const preserveAgentCapture =
@@ -127,7 +119,7 @@ export function useVoiceAgent() {
       turns.map(turn => (turn.isStreaming ? { ...turn, isStreaming: false } : turn))
     );
     return generation;
-  }, [cancelSpeech, pipeline, setPhase]);
+  }, [cancelSpeech, setPhase]);
 
   const resumeAgentListening = useCallback(
     async (generation: number) => {
@@ -211,7 +203,7 @@ export function useVoiceAgent() {
   );
 
   const transcribeRecording = useCallback(
-    async (audio: Blob | readonly Blob[], generation: number) => {
+    async (audio: Blob, generation: number) => {
       if (generation !== turnGenerationRef.current) return;
 
       setPhase('transcribing');
@@ -259,7 +251,6 @@ export function useVoiceAgent() {
 
       try {
         const audio = await pipeline.finish(capture);
-        if (mode !== 'agent') releaseVoiceInput();
         if (generation !== turnGenerationRef.current) return;
 
         if (mode !== 'agent') {
@@ -282,7 +273,6 @@ export function useVoiceAgent() {
         appendTurn('agent', getErrorMessage(error, 'Recording failed.'));
         setPhase('idle');
       } finally {
-        if (mode !== 'agent') releaseVoiceInput();
         if (finishingCaptureRef.current === capture) {
           finishingCaptureRef.current = null;
         }
@@ -290,7 +280,6 @@ export function useVoiceAgent() {
     },
     [
       appendTurn,
-      releaseVoiceInput,
       setAgentMode,
       setPhase,
       settleTurn,
@@ -305,11 +294,6 @@ export function useVoiceAgent() {
       const startup = (async () => {
         await prepareForTurn();
         const generation = turnGenerationRef.current;
-        if (!(await claimVoiceInput())) return;
-        if (generation !== turnGenerationRef.current) {
-          releaseVoiceInput();
-          return;
-        }
         activeInputModeRef.current = mode;
         setAgentMode(mode === 'agent');
         setPhase('acquiring-microphone');
@@ -318,7 +302,6 @@ export function useVoiceAgent() {
         try {
           if (!capture) capture = await ensureCapture();
         } catch (error) {
-          releaseVoiceInput();
           if (generation !== turnGenerationRef.current) return;
 
           console.warn('Microphone unavailable.', error);
@@ -331,7 +314,6 @@ export function useVoiceAgent() {
 
         if (generation !== turnGenerationRef.current) {
           await pipeline.discardAndPause(capture);
-          releaseVoiceInput();
           return;
         }
 
@@ -347,13 +329,24 @@ export function useVoiceAgent() {
               } else {
                 finishPending = true;
               }
+            },
+            onMaxDuration: () => {
+              if (
+                generation === turnGenerationRef.current &&
+                pipeline.owns(startedCapture)
+              ) {
+                if (captureReady) {
+                  void finishCaptureAndTranscribe(startedCapture, generation);
+                } else {
+                  finishPending = true;
+                }
+              }
             }
           });
           capture = startedCapture;
         } catch (error) {
           activeInputModeRef.current = null;
           await pipeline.disposeCapture(capture);
-          releaseVoiceInput();
           if (generation !== turnGenerationRef.current) return;
 
           console.error('Recording failed.', error);
@@ -371,7 +364,6 @@ export function useVoiceAgent() {
         ) {
           activeInputModeRef.current = null;
           await pipeline.disposeCapture(capture);
-          releaseVoiceInput();
           return;
         }
 
@@ -392,9 +384,7 @@ export function useVoiceAgent() {
       appendTurn,
       finishCaptureAndTranscribe,
       ensureCapture,
-      claimVoiceInput,
       prepareForTurn,
-      releaseVoiceInput,
       setAgentMode,
       setPhase
     ]
@@ -404,7 +394,6 @@ export function useVoiceAgent() {
     if (agentModeEnabledRef.current) {
       setAgentMode(false);
       await prepareForTurn();
-      releaseVoiceInput();
       return;
     }
 
@@ -429,13 +418,7 @@ export function useVoiceAgent() {
     }
 
     await startCapture('tap');
-  }, [
-    finishCaptureAndTranscribe,
-    prepareForTurn,
-    releaseVoiceInput,
-    setAgentMode,
-    startCapture
-  ]);
+  }, [finishCaptureAndTranscribe, prepareForTurn, setAgentMode, startCapture]);
 
   const beginHoldToTalk = useCallback(async () => {
     if (agentModeEnabledRef.current || phaseRef.current !== 'idle') return;
@@ -462,8 +445,7 @@ export function useVoiceAgent() {
     if (!agentModeEnabledRef.current && activeInputModeRef.current !== 'agent') return;
     setAgentMode(false);
     await prepareForTurn();
-    releaseVoiceInput();
-  }, [prepareForTurn, releaseVoiceInput, setAgentMode]);
+  }, [prepareForTurn, setAgentMode]);
 
   const cancelCurrentTurn = useCallback(() => {
     void (async () => {
@@ -528,30 +510,21 @@ export function useVoiceAgent() {
   }, [settleTurn, toggleSpeech]);
 
   useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-    return bridge.subscribeVoiceInputRevoked(async () => {
-      turnGenerationRef.current += 1;
-      turnAbortRef.current?.abort();
-      turnAbortRef.current = null;
-      activeInputModeRef.current = null;
-      setAgentMode(false);
-      cancelSpeech();
-      setPhase('idle');
-      await pipeline.pauseForHandoff();
+    void ensureCapture().catch(error => {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      console.warn('Microphone warmup failed; the next voice action will retry.', error);
     });
-  }, [cancelSpeech, pipeline, setAgentMode, setPhase]);
+  }, [ensureCapture]);
 
   useEffect(
     () => () => {
       turnGenerationRef.current += 1;
       turnAbortRef.current?.abort();
       turnAbortRef.current = null;
-      releaseVoiceInput();
       void pipeline.dispose();
       cancelSpeech();
     },
-    [cancelSpeech, releaseVoiceInput]
+    [cancelSpeech]
   );
 
   return {

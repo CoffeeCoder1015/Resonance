@@ -1,7 +1,6 @@
 import { createBackendClient } from './backend-client.mjs';
 
 const VOICE_TURNS_ROUTE = '/api/voice/turns';
-const AUDIO_TRANSCRIPTIONS_ROUTE = '/api/audio/transcriptions';
 const TEXT_TURNS_ROUTE = '/api/text/turns';
 const AGENT_PROVIDERS_ROUTE = '/api/agent/providers';
 const CURRENT_AGENT_PROVIDER_ROUTE = '/api/agent/providers/current';
@@ -79,9 +78,6 @@ function routeRequest(pathname, method) {
   if (pathname === VOICE_TURNS_ROUTE) {
     return method === 'POST' ? 'createVoiceTurn' : 'methodNotAllowed';
   }
-  if (pathname === AUDIO_TRANSCRIPTIONS_ROUTE) {
-    return method === 'POST' ? 'createAudioTranscription' : 'methodNotAllowed';
-  }
   if (pathname === TEXT_TURNS_ROUTE) {
     return method === 'POST' ? 'createTextTurn' : 'methodNotAllowed';
   }
@@ -146,30 +142,22 @@ export function createBackendMiddleware({
 
     try {
       let result;
-      if (route === 'createVoiceTurn' || route === 'createAudioTranscription') {
-        const mode = route === 'createVoiceTurn' ? requestUrl.searchParams.get('mode') : null;
-        if (route === 'createVoiceTurn' && mode !== 'agent' && mode !== 'transcription') {
+      if (route === 'createVoiceTurn') {
+        const mode = requestUrl.searchParams.get('mode');
+        if (mode !== 'agent' && mode !== 'transcription') {
           throw createHttpError('A valid pipeline mode is required.', 422);
         }
         const contentType = String(request.headers['content-type'] || '');
         if (!contentType.toLowerCase().startsWith('audio/')) {
           throw createHttpError('An audio content type is required.', 415);
         }
-        const audio = await readBody(request, MAX_AUDIO_BYTES);
-        const upload = {
-          audio,
+        result = await client.createVoiceTurn({
+          audio: await readBody(request, MAX_AUDIO_BYTES),
           contentType,
           filename: getFilename(contentType),
+          mode,
           signal: abortController.signal
-        };
-        result = route === 'createVoiceTurn'
-          ? await client.createVoiceTurn({
-              ...upload,
-              mode
-            })
-          : await client.createAudioTranscription({
-              ...upload
-            });
+        });
       } else if (route === 'createTextTurn') {
         const body = await readJson(request);
         result = await client.createTextTurn({

@@ -2,12 +2,6 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { protocol } from 'electron';
 
-import {
-  MAX_AUDIO_BYTES,
-  RequestBodyTooLargeError,
-  readRequestBodyWithinLimit,
-} from './request-body.js';
-
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -20,10 +14,6 @@ const CONTENT_TYPES: Record<string, string> = {
 
 const API_PREFIX = '/api/';
 const BACKEND_PREFIX = '/v1/';
-const RAW_AUDIO_PATHS = new Set([
-  '/api/audio/transcriptions',
-  '/api/voice/turns'
-]);
 
 function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
@@ -44,24 +34,15 @@ async function proxyBackend(request: Request, url: URL): Promise<Response> {
   let body: BodyInit | undefined;
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    if (RAW_AUDIO_PATHS.has(pathname)) {
+    if (pathname === '/api/voice/turns') {
       const contentType = headers.get('content-type') || 'application/octet-stream';
       if (!contentType.toLowerCase().startsWith('audio/')) {
         return jsonResponse(415, { error: 'An audio content type is required.' });
       }
-      let audioBody: BlobPart[];
-      try {
-        audioBody = await readRequestBodyWithinLimit(request, MAX_AUDIO_BYTES);
-      } catch (error) {
-        if (error instanceof RequestBodyTooLargeError) {
-          return jsonResponse(413, { error: error.message });
-        }
-        throw error;
-      }
       const form = new FormData();
       form.append(
         'file',
-        new Blob(audioBody, { type: contentType }),
+        new Blob([await request.arrayBuffer()], { type: contentType }),
         `recording.${contentType.split('/')[1]?.split(';')[0] || 'audio'}`
       );
       headers.delete('content-type');

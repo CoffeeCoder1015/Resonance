@@ -48,38 +48,6 @@ export function App() {
     stopAgentSpeech
   } = useVoiceAgent();
   const [hotkeys, setHotkeys] = useState<HotkeySettings | null>(null);
-  const [isWindowActive, setIsWindowActive] = useState(true);
-
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (bridge) {
-      let disposed = false;
-      const unsubscribe = bridge.subscribeWindowFocus(focused => {
-        if (!disposed) setIsWindowActive(focused);
-      });
-      void bridge.getWindowFocus().then(focused => {
-        if (!disposed) setIsWindowActive(focused);
-      });
-      return () => {
-        disposed = true;
-        unsubscribe();
-      };
-    }
-
-    const updateWindowActivity = () => {
-      setIsWindowActive(document.visibilityState === 'visible' && document.hasFocus());
-    };
-    window.addEventListener('focus', updateWindowActivity);
-    window.addEventListener('blur', updateWindowActivity);
-    document.addEventListener('visibilitychange', updateWindowActivity);
-    updateWindowActivity();
-    return () => {
-      window.removeEventListener('focus', updateWindowActivity);
-      window.removeEventListener('blur', updateWindowActivity);
-      document.removeEventListener('visibilitychange', updateWindowActivity);
-    };
-  }, []);
-
   useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
@@ -207,7 +175,6 @@ export function App() {
               volume={currentSpeechVolume}
               frequencies={audioFrequencies}
               onAvatarClick={toggleListening}
-              active={isWindowActive}
             />
           </div>
 
@@ -222,7 +189,6 @@ export function App() {
         visualTheme={visualTheme}
         volume={currentSpeechVolume}
         frequencies={audioFrequencies}
-        avatarActive={isWindowActive}
         speechOutputEnabled={speechOutputEnabled}
         agentModeEnabled={agentModeEnabled}
         hotkeys={hotkeys}

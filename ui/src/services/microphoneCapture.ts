@@ -3,6 +3,7 @@ import type { VoiceInputMode } from '../types/voice';
 import { SpeechSegmentBuffer } from './speechSegmentBuffer';
 
 const VAD_ASSET_PATH = '/vad/';
+const MAX_CAPTURE_DURATION_MS = 60_000;
 
 interface VoiceWindow extends Window {
   webkitAudioContext?: typeof AudioContext;
@@ -11,6 +12,7 @@ interface VoiceWindow extends Window {
 interface StartCaptureOptions {
   mode: VoiceInputMode;
   onUtterance: () => void;
+  onMaxDuration?: () => void;
 }
 
 function closeAudioContext(context: AudioContext) {
@@ -23,6 +25,7 @@ export class MicrophoneCapture {
   private readonly segments = new SpeechSegmentBuffer();
   private mode: VoiceInputMode = 'tap';
   private onUtterance: () => void = () => undefined;
+  private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private finishing = false;
   private readyNotified = false;
@@ -111,7 +114,7 @@ export class MicrophoneCapture {
     }
   }
 
-  async start({ mode, onUtterance }: StartCaptureOptions) {
+  async start({ mode, onUtterance, onMaxDuration }: StartCaptureOptions) {
     this.assertActive();
     if (!this.stream.getAudioTracks().some(track => track.readyState === 'live')) {
       throw new Error('The microphone stream is no longer available.');
@@ -125,16 +128,21 @@ export class MicrophoneCapture {
     if (this.context.state === 'suspended') await this.context.resume();
     if (!this.vad.listening) await this.vad.start();
     this.assertActive();
+
+    this.clearMaxDurationTimer();
+    if (mode !== 'agent' && onMaxDuration) {
+      this.maxDurationTimer = setTimeout(onMaxDuration, MAX_CAPTURE_DURATION_MS);
+    }
   }
 
-  async finish(): Promise<Blob[] | null> {
+  async finish(): Promise<Blob | null> {
     this.assertActive();
     this.finishing = true;
+    this.clearMaxDurationTimer();
 
     try {
       if (this.vad.listening) await this.vad.pause();
-      const chunks = this.segments.drainWavChunks();
-      return chunks.length > 0 ? chunks : null;
+      return this.segments.drainWav();
     } finally {
       this.setStreamEnabled(false);
       this.finishing = false;
@@ -144,6 +152,7 @@ export class MicrophoneCapture {
   async discardAndPause() {
     if (this.disposed) return;
     this.finishing = true;
+    this.clearMaxDurationTimer();
     try {
       if (this.vad.listening) await this.vad.pause();
       this.segments.clear();
@@ -166,6 +175,7 @@ export class MicrophoneCapture {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearMaxDurationTimer();
     this.stream.getTracks().forEach(track => track.stop());
     await this.vad.destroy().catch(() => undefined);
     this.microphone.disconnect();
@@ -184,6 +194,13 @@ export class MicrophoneCapture {
     ) {
       this.readyNotified = true;
       queueMicrotask(this.onUtterance);
+    }
+  }
+
+  private clearMaxDurationTimer() {
+    if (this.maxDurationTimer !== null) {
+      clearTimeout(this.maxDurationTimer);
+      this.maxDurationTimer = null;
     }
   }
 

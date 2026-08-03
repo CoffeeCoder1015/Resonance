@@ -11,9 +11,8 @@ The website server forwards the turn to the Resonance backend. The backend
 transcribes it, starts the selected agent CLI, and returns a turn ID. The browser
 polls `GET /api/turns/{id}` for the completed response.
 
-Long recordings are retained in full and encoded as bounded 60-second WAV
-chunks. The chunks are transcribed sequentially and combined into one voice
-turn, so holding the microphone beyond 60 seconds does not cut off the result.
+Browser voice turns automatically finalize after 60 seconds so capture memory
+and inference work remain bounded.
 
 Configuration:
 
