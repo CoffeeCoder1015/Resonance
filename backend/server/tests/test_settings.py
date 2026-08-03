@@ -35,10 +35,13 @@ class SettingsTests(unittest.TestCase):
             path = Path(directory) / "config.json"
 
             save_agent_provider("antigravity", path)
-            save_transcription_provider("gemma", path)
+            save_transcription_provider("lfm-transcription", path)
 
             self.assertEqual(load_agent_provider(path), "antigravity")
-            self.assertEqual(load_transcription_provider(path), "gemma")
+            self.assertEqual(
+                load_transcription_provider(path),
+                "lfm-transcription",
+            )
             self.assertTrue(path.is_file())
 
     def test_providers_share_one_config(self) -> None:
@@ -46,29 +49,18 @@ class SettingsTests(unittest.TestCase):
             path = Path(directory) / "config.json"
 
             save_agent_provider("antigravity", path)
-            save_transcription_provider("liquid", path)
+            save_transcription_provider("passthrough", path)
             save_asr_provider("alternate", path)
             self.assertEqual(load_agent_provider(path), "antigravity")
-            self.assertEqual(load_transcription_provider(path), "liquid")
+            self.assertEqual(load_transcription_provider(path), "passthrough")
             self.assertEqual(load_asr_provider(path), "alternate")
-
-    def test_legacy_provider_is_migrated_to_the_matching_pipeline(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.json"
-            path.write_text(
-                '{"response_provider": "gemma", "asr_provider": "whisper"}',
-                encoding="utf-8",
-            )
-
-            self.assertEqual(load_agent_provider(path), DEFAULT_AGENT_PROVIDER)
-            self.assertEqual(load_transcription_provider(path), "gemma")
 
     def test_cross_pipeline_provider_config_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             path.write_text(
                 (
-                    '{"agent_provider": "gemma", '
+                    '{"agent_provider": "passthrough", '
                     '"transcription_provider": "opencode", '
                     '"asr_provider": "whisper"}'
                 ),
