@@ -153,6 +153,10 @@ export const TranscriptionPill = memo(function TranscriptionPill({
               volume={volume}
               frequencies={frequencies}
               onAvatarClick={onExpand ?? onPrimaryAction}
+              // The pill BrowserWindow is deliberately non-focusable, so its
+              // animation activity follows its visual expansion rather than
+              // document focus.
+              active={!isCompact}
             />
           </div>
         </div>
@@ -196,6 +200,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
             <PillWaveform
               status={status}
               microphoneLevel={microphoneLevel}
+              active={!isCompact}
             />
           </div>
 

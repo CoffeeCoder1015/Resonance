@@ -24,6 +24,7 @@ interface MinimalControlBarProps {
   visualTheme: VisualTheme;
   volume: number;
   frequencies: Uint8Array;
+  avatarActive: boolean;
   speechOutputEnabled: boolean;
   agentModeEnabled: boolean;
   hotkeys: HotkeySettings | null;
@@ -41,6 +42,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
   visualTheme,
   volume,
   frequencies,
+  avatarActive,
   speechOutputEnabled,
   agentModeEnabled,
   hotkeys,
@@ -244,6 +246,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
                       volume={volume}
                       frequencies={frequencies}
                       preview
+                      active={showSettings && avatarActive}
                     />
                   </div>
 
@@ -374,7 +377,7 @@ export const MinimalControlBar: React.FC<MinimalControlBarProps> = ({
           className="agent-mode-button w-11 h-11 rounded-full border-[3px] border-black neo-shadow flex items-center justify-center neo-press"
         >
           <AgentVoiceRing
-            active={agentModeEnabled}
+            active={agentModeEnabled && avatarActive}
             voiceLevel={agentVoiceLevel}
             frequencies={frequencies}
           />

@@ -74,16 +74,31 @@ export const TranscriptLog: React.FC<TranscriptLogProps> = ({
     const classicCylinderRadius = wheelHalfHeight / Math.sin(maximumAngleRadians);
     const scaledCylinderRadius = rollTravel / Math.sin(maximumAngleRadians);
 
-    scrollArea.querySelectorAll<HTMLElement>('[data-transcript-turn]').forEach(slot => {
-      const turn = slot.querySelector<HTMLElement>('[data-transcript-visual]');
-      if (!turn) return;
+    // Keep browser layout reads and style writes in separate phases. Writing a
+    // previous item's custom properties before measuring the next item can
+    // force a synchronous layout recalculation for every transcript turn.
+    const turnLayouts = Array.from(
+      scrollArea.querySelectorAll<HTMLElement>('[data-transcript-turn]'),
+      slot => {
+        const turn = slot.querySelector<HTMLElement>('[data-transcript-visual]');
+        return turn
+          ? {
+              turn,
+              bounds: wheelIsActive ? slot.getBoundingClientRect() : null
+            }
+          : null;
+      }
+    ).filter(
+      (layout): layout is { turn: HTMLElement; bounds: DOMRect | null } => layout !== null
+    );
 
+    turnLayouts.forEach(({ turn, bounds }) => {
       if (!wheelIsActive) {
         setNeutralWheelStyle(turn);
         return;
       }
 
-      const bounds = slot.getBoundingClientRect();
+      if (!bounds) return;
       if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) {
         setHiddenWheelStyle(turn);
         return;
