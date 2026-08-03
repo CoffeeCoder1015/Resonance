@@ -35,6 +35,11 @@ from resonance_backend.settings import (
     save_agent_provider,
     save_transcription_provider,
 )
+from resonance_backend.windows_insertion import (
+    WindowsIntegrationUnavailable,
+    get_foreground_target,
+    paste_text_via_clipboard,
+)
 
 
 SAMPLE_RATE = 16_000
@@ -390,6 +395,30 @@ def get_turn(turn_id: str) -> dict[str, str]:
     if turn is None:
         raise HTTPException(status_code=404, detail="Turn not found.")
     return turn
+
+
+@app.get("/v1/windows/foreground-target")
+def get_windows_foreground_target() -> dict[str, object]:
+    try:
+        target = get_foreground_target()
+    except WindowsIntegrationUnavailable as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    return {"target": None if target is None else target.to_dict()}
+
+
+@app.post("/v1/windows/insert-text")
+def insert_windows_text(request: WindowsInsertionRequest) -> dict[str, object]:
+    try:
+        result = paste_text_via_clipboard(
+            request.window_handle,
+            request.process_id,
+            request.text,
+        )
+    except WindowsIntegrationUnavailable as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return result.to_dict()
 
 
 @app.get("/v1/agent/providers")

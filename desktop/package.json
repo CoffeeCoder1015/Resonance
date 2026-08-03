@@ -5,8 +5,7 @@
   "type": "module",
   "main": "out/main.js",
   "scripts": {
-    "build:native": "node scripts/build-native.mjs",
-    "build": "npm run build:native && tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
     "dev": "npm run build && electron .",
     "start": "npm run build && electron .",
     "dist:win": "npm run build && electron-builder --win"
@@ -36,10 +35,6 @@
       {
         "from": "../ui/dist-pill",
         "to": "app/ui/dist-pill"
-      },
-      {
-        "from": "native/bin/resonance-paste.exe",
-        "to": "app/native/resonance-paste.exe"
       }
     ],
     "win": {
