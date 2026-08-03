@@ -18,31 +18,29 @@ uv sync --locked
 
 The server listens at `http://127.0.0.1:8000`.
 
+On Windows, this same process owns the desktop integration routes used to
+capture the foreground target and paste completed text at its caret. The path
+uses pywin32/OLE clipboard APIs plus `SendInput`, preserves clipboard-based
+insertion compatibility, and avoids launching a helper process for every turn.
+
 Authenticate the provider CLIs under the same operating-system user before
-starting the backend. OpenCode is the default agent provider; passthrough is the
-default transcription provider.
+starting the backend. OpenCode is the default agent provider; LFM 2.5
+Transcription is the default transcription provider.
 
 The backend calls `opencode run --format json` or `agy -p`. It does not pass a
-model flag, so each CLI keeps its own default model. The local model providers
-run directly through the Vulkan build of `llama-cpp-python`:
-
-- Gemma runs `unsloth/gemma-4-E2B-it-qat-GGUF` UD-Q4_K_XL.
-- Liquid runs `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` Q4_K_M.
-
-Each provider downloads its GGUF into the Hugging Face cache and loads it on
-first use. Liquid keeps its model loaded for subsequent responses. Gemma resets
-an idle timer after each response and releases its loaded model after 10 minutes
-without Gemma activity; the next Gemma response loads it again. Gemma uses the
-selected mode directly: agent turns receive an ordinary user message, while
-transcription turns JSON-encode the raw ASR text inside an explicitly marked,
-untrusted data block.
+model flag, so each CLI keeps its own default model. The LFM transcription
+provider loads `backend/model/LFM2.5-1.2B-Base.Q4_K_M.gguf` through
+`llama-cpp-python` with a 32k context. It passes the raw transcript directly to
+the completion API without instructions, chat messages, or prompt wrappers.
+Generation uses the context remaining after the input transcript rather than a
+fixed output-token cap. All other inference settings retain their defaults.
 
 Each text provider implements the same `respond` interface. Turn
 orchestration does not know how a provider constructs commands or parses text.
 
 Agent mode can select OpenCode or Antigravity. Transcription mode can select
-Gemma, Liquid, or Passthrough. The mode on each API call chooses which saved
-provider setting is used; it is not global application state.
+LFM 2.5 Transcription or Passthrough. The mode on each API call chooses which
+saved provider setting is used; it is not global application state.
 
 ## Voice turn
 
@@ -51,8 +49,9 @@ curl.exe -X POST "http://127.0.0.1:8000/v1/voice/turns?mode=transcription" `
   -F "file=@C:\path\to\audio.wav"
 ```
 
-The input must be 16 kHz WAV audio. ASR completes before the initial response;
-the text stage continues in the background:
+The input must be 16 kHz WAV audio. Long inputs are decoded and transcribed in
+bounded 60-second chunks, then joined before the response stage. ASR completes
+before the initial response; the text stage continues in the background:
 
 ```json
 {

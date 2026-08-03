@@ -12,11 +12,16 @@ server-request lifecycle, and drives its own avatar. Electron IPC coordinates
 window state and text insertion, but does not relay microphone visualization
 data between the renderers.
 
-## Development
+## Tray lifecycle
 
-The Windows desktop build compiles `native/windows-paste.c` into the clipboard
-insertion helper. Install MinGW-w64 GCC and make `gcc.exe` available on `PATH`,
-or set `RESONANCE_CC` to a compatible compiler executable.
+Closing the expanded window destroys only the desktop renderer and releases its
+microphone, VAD, and WebGL resources. The transcription pill remains independent
+and continues running until **Hide transcription pill** destroys its renderer
+and stops its microphone, VAD, WebGL, and global input hook. Opening Resonance
+again recreates only the expanded renderer; **Show transcription pill** creates
+the pill renderer independently when it was previously hidden.
+
+## Development
 
 Start the existing Python backend when voice/model features are needed:
 
@@ -64,6 +69,13 @@ Bundling it or supervising it as an Electron child process requires a separate
 decision about the Python environment and model artifact installation. Electron
 discovers it at the configured origin and reports an unavailable-backend error
 if it is not ready.
+
+On Windows, foreground-target capture and clipboard insertion also run inside
+that long-lived Python backend through pywin32 and `SendInput`. There is no
+per-insertion PowerShell command, C# compilation, CLI process, or native helper
+executable. The backend revalidates the captured target immediately before
+Ctrl+V and restores the previous OLE clipboard object unless another clipboard
+write occurred in the meantime.
 
 ## Transport ownership
 
