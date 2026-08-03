@@ -106,8 +106,15 @@ test('routes agent and transcription provider reads and changes separately', asy
     },
     getTranscriptionProviders() {
       return {
-        current: 'passthrough',
-        providers: [{ id: 'passthrough', label: 'Passthrough', available: true }]
+        current: 'lfm-transcription',
+        providers: [
+          {
+            id: 'lfm-transcription',
+            label: 'LFM 2.5 Transcription',
+            available: true
+          },
+          { id: 'passthrough', label: 'Passthrough', available: true }
+        ]
       };
     },
     setTranscriptionProvider({ provider }) {
@@ -130,19 +137,19 @@ test('routes agent and transcription provider reads and changes separately', asy
   assert.deepEqual(await changeResponse.json(), { provider: 'antigravity' });
 
   const transcriptionResponse = await fetch(`${origin}/api/transcription/providers`);
-  assert.equal((await transcriptionResponse.json()).current, 'passthrough');
+  assert.equal((await transcriptionResponse.json()).current, 'lfm-transcription');
   const changeTranscription = await fetch(
     `${origin}/api/transcription/providers/current`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'gemma' })
+      body: JSON.stringify({ provider: 'lfm-transcription' })
     }
   );
-  assert.deepEqual(await changeTranscription.json(), { provider: 'gemma' });
+  assert.deepEqual(await changeTranscription.json(), { provider: 'lfm-transcription' });
   assert.deepEqual(calls, [
     ['agent', 'antigravity'],
-    ['transcription', 'gemma']
+    ['transcription', 'lfm-transcription']
   ]);
 });
 
@@ -233,6 +240,27 @@ test('returns an addressable voice turn', async () => {
   assert.equal(response.headers.get('retry-after'), '1');
   assert.equal((await response.json()).transcript, 'Hello');
   assert.deepEqual(calls, ['transcription']);
+});
+
+test('routes an audio chunk transcription without creating a turn', async () => {
+  const calls = [];
+  const client = {
+    createAudioTranscription({ audio, contentType, filename }) {
+      calls.push([[...audio], contentType, filename]);
+      return { transcript: 'Chunk transcript.' };
+    }
+  };
+  const origin = await startServer({ client });
+
+  const response = await fetch(`${origin}/api/audio/transcriptions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/wav' },
+    body: new Uint8Array([1, 2, 3])
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { transcript: 'Chunk transcript.' });
+  assert.deepEqual(calls, [[[1, 2, 3], 'audio/wav', 'recording.wav']]);
 });
 
 test('requires voice pipeline mode on every request', async () => {

@@ -30,6 +30,8 @@ export type RuntimeCommand =
   | 'end-hold-to-talk'
   | 'show-expanded';
 
+export type VoiceInputOwner = 'desktop' | 'pill';
+
 export type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 
 export type HotkeyKey =
@@ -78,7 +80,14 @@ export const CHANNELS = {
   command: 'runtime:command',
   pillHover: 'pill:hover',
   pillStatus: 'pill:status',
+  claimVoiceInput: 'voice-input:claim',
+  releaseVoiceInput: 'voice-input:release',
+  voiceInputRevoked: 'voice-input:revoked',
+  voiceInputRevokedAck: 'voice-input:revoked-ack',
+  getWindowFocus: 'desktop:get-window-focus',
+  windowFocus: 'desktop:window-focus',
   beginTextInsertion: 'insertion:begin',
+  cancelTextInsertion: 'insertion:cancel',
   insertTextAtCaret: 'insertion:insert-at-caret',
   getHotkeys: 'hotkeys:get',
   updateHotkeys: 'hotkeys:update'

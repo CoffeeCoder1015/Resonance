@@ -183,33 +183,86 @@ class TextTurn(BaseModel):
     mode: Literal["agent", "transcription"]
 
 
+class WindowsInsertionRequest(BaseModel):
+    window_handle: str
+    process_id: int
+    text: str
+
+
 def transcribe(file: UploadFile) -> str:
     try:
-        samples, sample_rate = soundfile.read(
-            file.file,
-            dtype="float32",
-            always_2d=True,
+        file.file.seek(0, 2)
+        upload_size = file.file.tell()
+        file.file.seek(0)
+    except (AttributeError, OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Audio recording could not be read.",
+        ) from error
+
+    if upload_size > MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Audio recording is too large.",
         )
+
+    try:
+        audio_file = soundfile.SoundFile(file.file)
     except (OSError, RuntimeError, ValueError) as error:
         raise HTTPException(
             status_code=422,
             detail="Audio recording could not be decoded.",
         ) from error
 
-    if samples.shape[0] == 0:
-        raise HTTPException(status_code=400, detail="Audio recording is empty.")
-    if sample_rate != SAMPLE_RATE:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Audio recording must use a {SAMPLE_RATE} Hz sample rate.",
-        )
+    transcripts: list[str] = []
+    with audio_file:
+        try:
+            if audio_file.frames == 0:
+                raise HTTPException(status_code=400, detail="Audio recording is empty.")
+            if audio_file.samplerate != SAMPLE_RATE:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Audio recording must use a {SAMPLE_RATE} Hz sample rate.",
+                )
+            if audio_file.channels > MAX_AUDIO_CHANNELS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Audio recording must have no more than "
+                        f"{MAX_AUDIO_CHANNELS} channels."
+                    ),
+                )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail="Audio recording could not be decoded.",
+            ) from error
 
-    return asr_runtime.transcribe(
-        {
-            "array": samples.mean(axis=1),
-            "sampling_rate": sample_rate,
-        }
-    )
+        while True:
+            try:
+                samples = audio_file.read(
+                    frames=TRANSCRIPTION_CHUNK_FRAMES,
+                    dtype="float32",
+                    always_2d=True,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Audio recording could not be decoded.",
+                ) from error
+            if samples.shape[0] == 0:
+                break
+
+            transcript = asr_runtime.transcribe(
+                {
+                    "array": samples.mean(axis=1),
+                    "sampling_rate": SAMPLE_RATE,
+                }
+            ).strip()
+            if transcript:
+                transcripts.append(transcript)
+
+    return " ".join(transcripts)
 
 
 def create_turn(
@@ -304,6 +357,13 @@ def create_voice_turn(
     response.headers["Location"] = f"/v1/turns/{turn['id']}"
     response.headers["Retry-After"] = "1"
     return turn
+
+
+@app.post("/v1/audio/transcriptions")
+def create_audio_transcription(
+    file: Annotated[UploadFile, File()],
+) -> dict[str, str]:
+    return {"transcript": transcribe(file)}
 
 
 @app.post("/v1/text/turns", status_code=202)
