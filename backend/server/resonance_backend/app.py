@@ -1,5 +1,9 @@
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal
+from collections.abc import Iterator, MutableMapping
+from dataclasses import dataclass
+from threading import RLock
+from time import monotonic
+from typing import Annotated, Callable, Literal
 from uuid import uuid4
 
 import soundfile
@@ -34,6 +38,123 @@ from resonance_backend.settings import (
 
 
 SAMPLE_RATE = 16_000
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
+TRANSCRIPTION_CHUNK_SECONDS = 60
+TRANSCRIPTION_CHUNK_FRAMES = SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS
+MAX_AUDIO_CHANNELS = 2
+MAX_RETAINED_TURNS = 100
+COMPLETED_TURN_TTL_SECONDS = 15 * 60
+
+
+class TurnCapacityError(Exception):
+    """Raised when every retained turn is still running."""
+
+
+@dataclass
+class _TurnRecord:
+    turn: dict[str, str]
+    created_at: float
+    terminal_at: float | None = None
+
+
+class TurnStore(MutableMapping[str, dict[str, str]]):
+    """A bounded, lock-protected turn store for concurrent request workers."""
+
+    _TERMINAL_STATUSES = frozenset({"completed", "failed"})
+
+    def __init__(
+        self,
+        *,
+        max_turns: int = MAX_RETAINED_TURNS,
+        completed_ttl_seconds: float = COMPLETED_TURN_TTL_SECONDS,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self._max_turns = max_turns
+        self._completed_ttl_seconds = completed_ttl_seconds
+        self._clock = clock
+        self._records: dict[str, _TurnRecord] = {}
+        self._lock = RLock()
+
+    def _purge_expired_locked(self, now: float) -> None:
+        expired_ids = [
+            turn_id
+            for turn_id, record in self._records.items()
+            if record.terminal_at is not None
+            and now - record.terminal_at >= self._completed_ttl_seconds
+        ]
+        for turn_id in expired_ids:
+            del self._records[turn_id]
+
+    def _evict_terminal_turns_locked(self, now: float) -> None:
+        self._purge_expired_locked(now)
+        while len(self._records) >= self._max_turns:
+            terminal_turns = [
+                (record.terminal_at or record.created_at, turn_id)
+                for turn_id, record in self._records.items()
+                if record.terminal_at is not None
+            ]
+            if not terminal_turns:
+                raise TurnCapacityError()
+            _, oldest_turn_id = min(terminal_turns)
+            del self._records[oldest_turn_id]
+
+    def create(self, turn: dict[str, str]) -> dict[str, str]:
+        turn_id = turn["id"]
+        now = self._clock()
+        with self._lock:
+            self._evict_terminal_turns_locked(now)
+            if turn_id in self._records:
+                raise ValueError(f"Turn already exists: {turn_id}")
+            self._records[turn_id] = _TurnRecord(dict(turn), now)
+            return dict(turn)
+
+    def set_terminal(self, turn_id: str, **fields: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            self._purge_expired_locked(now)
+            record = self._records.get(turn_id)
+            if record is None:
+                return False
+            record.turn = {**record.turn, **fields}
+            record.terminal_at = now
+            return True
+
+    def __getitem__(self, turn_id: str) -> dict[str, str]:
+        now = self._clock()
+        with self._lock:
+            self._purge_expired_locked(now)
+            record = self._records[turn_id]
+            return dict(record.turn)
+
+    def __setitem__(self, turn_id: str, turn: dict[str, str]) -> None:
+        now = self._clock()
+        with self._lock:
+            if turn_id not in self._records:
+                self._evict_terminal_turns_locked(now)
+            terminal_at = (
+                now if turn.get("status") in self._TERMINAL_STATUSES else None
+            )
+            self._records[turn_id] = _TurnRecord(dict(turn), now, terminal_at)
+
+    def __delitem__(self, turn_id: str) -> None:
+        with self._lock:
+            del self._records[turn_id]
+
+    def __iter__(self) -> Iterator[str]:
+        now = self._clock()
+        with self._lock:
+            self._purge_expired_locked(now)
+            return iter(tuple(self._records))
+
+    def __len__(self) -> int:
+        now = self._clock()
+        with self._lock:
+            self._purge_expired_locked(now)
+            return len(self._records)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._records.clear()
 
 
 @asynccontextmanager
@@ -46,7 +167,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Resonance Backend", lifespan=lifespan)
-turns: dict[str, dict[str, str]] = {}
+turns = TurnStore()
 
 
 class ResponseProviderSelection(BaseModel):
@@ -127,7 +248,13 @@ def create_turn(
         "response_provider": response_provider,
         "mode": mode_id,
     }
-    turns[turn_id] = turn
+    try:
+        turns.create(turn)
+    except TurnCapacityError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Turn capacity is exhausted; wait for an active response to finish.",
+        ) from error
     background_tasks.add_task(
         run_response_stage,
         turn_id,
@@ -152,18 +279,10 @@ def run_response_stage(
             mode_id=mode_id,
         )
     except Exception as error:
-        turns[turn_id] = {
-            **turns[turn_id],
-            "status": "failed",
-            "error": str(error),
-        }
+        turns.set_terminal(turn_id, status="failed", error=str(error))
         return
 
-    turns[turn_id] = {
-        **turns[turn_id],
-        "status": "completed",
-        "response": output_text,
-    }
+    turns.set_terminal(turn_id, status="completed", response=output_text)
 
 
 @app.post("/v1/voice/turns", status_code=202)
