@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PillStatus } from '../components/transcription-pill/pillPresentation';
 import { useAudioVisualization } from '../hooks/useAudioVisualization';
-import { waitForTurn } from '../services/backend';
 import { MicrophoneCapture } from '../services/microphoneCapture';
 import { VoicePipeline } from '../services/voicePipeline';
 import { voicePhaseToAgentState } from '../services/voiceState';
@@ -29,7 +28,6 @@ export function useTranscriptionPillRuntime() {
   const generationRef = useRef(0);
   const startupRef = useRef<Promise<void> | null>(null);
   const finishingRef = useRef<MicrophoneCapture | null>(null);
-  const requestAbortRef = useRef<AbortController | null>(null);
   const insertionTargetRef = useRef<InsertionTargetPromise | null>(null);
   const holdReleasePendingRef = useRef(false);
   const holdRequestedRef = useRef(false);
@@ -77,8 +75,6 @@ export function useTranscriptionPillRuntime() {
 
   const prepare = useCallback(async () => {
     const generation = ++generationRef.current;
-    requestAbortRef.current?.abort();
-    requestAbortRef.current = null;
     pipeline.cancelPendingCapture();
     cancelInsertionTarget(insertionTargetRef.current);
     insertionTargetRef.current = null;
@@ -112,8 +108,6 @@ export function useTranscriptionPillRuntime() {
       finishingRef.current = capture;
       setPhase('transcribing');
       setStatus('processing');
-      let abortController: AbortController | null = null;
-
       try {
         const audio = await pipeline.finish(capture);
         releaseVoiceInput();
@@ -125,20 +119,6 @@ export function useTranscriptionPillRuntime() {
           return;
         }
 
-        abortController = new AbortController();
-        requestAbortRef.current = abortController;
-        const turn = await pipeline.createTurn(
-          audio,
-          'transcription',
-          abortController.signal
-        );
-        if (generation !== generationRef.current) return;
-        if (!turn.transcript) throw new Error('No speech was detected.');
-
-        setPhase('responding');
-        const completedTurn = await waitForTurn(turn.id, abortController.signal);
-        if (generation !== generationRef.current) return;
-
         const target = await insertionTarget;
         if (generation !== generationRef.current) return;
         const bridge = window.resonanceDesktop;
@@ -146,12 +126,36 @@ export function useTranscriptionPillRuntime() {
           if (target && 'error' in target) throw target.error;
           throw new Error('The transcription target is unavailable.');
         }
-        const insertion = await bridge.insertTextAtCaret(
+        setPhase('responding');
+        const result = await bridge.processTranscription(
           target.sessionId,
-          completedTurn.response!
+          {
+            data: await audio.arrayBuffer(),
+            contentType: audio.type || 'audio/wav'
+          }
         );
-        if (insertion.status !== 'inserted') {
-          throw new Error(insertion.reason || 'Text could not be inserted at the caret.');
+        if (generation !== generationRef.current) return;
+        if (result.status === 'cancelled') {
+          setStatus('idle');
+          setPhase('idle');
+          return;
+        }
+        if (result.status === 'failed') {
+          throw new Error(result.reason);
+        }
+        if (result.status === 'copied') {
+          showError(new Error(result.reason || 'Final text was copied to the clipboard.'));
+          setPhase('idle');
+          return;
+        }
+        if (result.downstream.status === 'failed') {
+          showError(
+            new Error(
+              `Refinement failed; inserted the raw transcript. ${result.downstream.error || ''}`.trim()
+            )
+          );
+          setPhase('idle');
+          return;
         }
 
         setStatus('idle');
@@ -163,9 +167,6 @@ export function useTranscriptionPillRuntime() {
       } finally {
         releaseVoiceInput();
         cancelInsertionTarget(insertionTarget);
-        if (requestAbortRef.current === abortController) {
-          requestAbortRef.current = null;
-        }
         if (insertionTargetRef.current === insertionTarget) {
           insertionTargetRef.current = null;
         }
@@ -315,8 +316,6 @@ export function useTranscriptionPillRuntime() {
     if (!bridge) return;
     return bridge.subscribeVoiceInputRevoked(async () => {
       generationRef.current += 1;
-      requestAbortRef.current?.abort();
-      requestAbortRef.current = null;
       cancelInsertionTarget(insertionTargetRef.current);
       insertionTargetRef.current = null;
       activeInputModeRef.current = null;
@@ -330,7 +329,6 @@ export function useTranscriptionPillRuntime() {
   useEffect(
     () => () => {
       generationRef.current += 1;
-      requestAbortRef.current?.abort();
       cancelInsertionTarget(insertionTargetRef.current);
       releaseVoiceInput();
       if (errorTimerRef.current !== null) window.clearTimeout(errorTimerRef.current);

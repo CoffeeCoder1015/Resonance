@@ -22,6 +22,26 @@ export type BeginTextInsertionResult =
   | { status: 'ready'; sessionId: string }
   | { status: 'unavailable'; reason: string };
 
+export interface TranscriptionAudio {
+  data: ArrayBuffer;
+  contentType: string;
+}
+
+export type ProcessTranscriptionResult =
+  | {
+      status: 'inserted' | 'copied';
+      transcript: string;
+      text: string;
+      downstream: {
+        provider: string;
+        status: 'completed' | 'failed';
+        error?: string;
+      };
+      reason?: string;
+    }
+  | { status: 'failed'; reason: string }
+  | { status: 'cancelled' };
+
 export type RuntimeCommand =
   | 'toggle-transcription'
   | 'begin-transcription'
@@ -89,6 +109,7 @@ export const CHANNELS = {
   beginTextInsertion: 'insertion:begin',
   cancelTextInsertion: 'insertion:cancel',
   insertTextAtCaret: 'insertion:insert-at-caret',
+  processTranscription: 'transcription:process',
   getHotkeys: 'hotkeys:get',
   updateHotkeys: 'hotkeys:update'
 } as const;

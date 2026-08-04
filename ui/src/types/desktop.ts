@@ -65,6 +65,26 @@ export type BeginTextInsertionResult =
   | { status: 'ready'; sessionId: string }
   | { status: 'unavailable'; reason: string };
 
+export interface TranscriptionAudio {
+  data: ArrayBuffer;
+  contentType: string;
+}
+
+export type ProcessTranscriptionResult =
+  | {
+      status: 'inserted' | 'copied';
+      transcript: string;
+      text: string;
+      downstream: {
+        provider: string;
+        status: 'completed' | 'failed';
+        error?: string;
+      };
+      reason?: string;
+    }
+  | { status: 'failed'; reason: string }
+  | { status: 'cancelled' };
+
 export interface ResonanceDesktopBridge {
   isElectron: true;
   getSnapshot(): Promise<DesktopRuntimeSnapshot>;
@@ -85,6 +105,10 @@ export interface ResonanceDesktopBridge {
     sessionId: string,
     text: string
   ): Promise<{ status: 'inserted' | 'failed'; reason?: string }>;
+  processTranscription(
+    sessionId: string,
+    audio: TranscriptionAudio
+  ): Promise<ProcessTranscriptionResult>;
   getHotkeys(): Promise<HotkeySettings>;
   updateHotkeys(settings: HotkeySettings): Promise<UpdateHotkeysResult>;
 }

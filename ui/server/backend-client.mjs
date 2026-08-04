@@ -31,10 +31,10 @@ export function createBackendClient({
   };
 
   return {
-    async createVoiceTurn({ audio, contentType, filename, mode, signal }) {
+    async processVoice({ audio, contentType, filename, mode, signal }) {
       const form = new FormData();
       form.append('file', new Blob([audio], { type: contentType }), filename);
-      return request(`/v1/voice/turns?mode=${encodeURIComponent(mode)}`, {
+      return request(`/v1/voice/process?mode=${encodeURIComponent(mode)}`, {
         method: 'POST',
         body: form,
         signal
@@ -51,17 +51,13 @@ export function createBackendClient({
       });
     },
 
-    createTextTurn({ text, mode, signal }) {
-      return request('/v1/text/turns', {
+    processText({ text, mode, signal }) {
+      return request('/v1/text/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, mode }),
         signal
       });
-    },
-
-    getTurn({ turnId, signal }) {
-      return request(`/v1/turns/${encodeURIComponent(turnId)}`, { signal });
     },
 
     getAgentProviders({ signal }) {

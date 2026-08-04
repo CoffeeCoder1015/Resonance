@@ -1,13 +1,10 @@
 from contextlib import asynccontextmanager
-from collections.abc import Iterator, MutableMapping
-from dataclasses import dataclass
-from threading import RLock
+from threading import Event, Lock
 from time import monotonic
 from typing import Annotated, Callable, Literal
-from uuid import uuid4
 
 import soundfile
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from resonance_backend.asr_providers import (
@@ -15,6 +12,7 @@ from resonance_backend.asr_providers import (
     asr_runtime,
     list_asr_providers,
 )
+from resonance_backend.asr import ASRCancelled
 from resonance_backend.modes import MODES, get_mode
 from resonance_backend.provider_ids import (
     AGENT_PROVIDER_IDS,
@@ -22,6 +20,8 @@ from resonance_backend.provider_ids import (
 )
 from resonance_backend.response_providers import (
     RESPONSE_PROVIDERS,
+    ResponseCancelled,
+    close_response_providers,
     get_response_provider,
     is_response_provider_available,
     list_response_providers,
@@ -47,119 +47,47 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024
 TRANSCRIPTION_CHUNK_SECONDS = 60
 TRANSCRIPTION_CHUNK_FRAMES = SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS
 MAX_AUDIO_CHANNELS = 2
-MAX_RETAINED_TURNS = 100
-COMPLETED_TURN_TTL_SECONDS = 15 * 60
+CANCELLED_JOB_TTL_SECONDS = 10 * 60
 
 
-class TurnCapacityError(Exception):
-    """Raised when every retained turn is still running."""
+class TranscriptionJobRegistry:
+    """Tracks only live cancellation signals; it never stores pipeline results."""
 
+    def __init__(self) -> None:
+        self._jobs: dict[str, tuple[Event, float]] = {}
+        self._lock = Lock()
 
-@dataclass
-class _TurnRecord:
-    turn: dict[str, str]
-    created_at: float
-    terminal_at: float | None = None
-
-
-class TurnStore(MutableMapping[str, dict[str, str]]):
-    """A bounded, lock-protected turn store for concurrent request workers."""
-
-    _TERMINAL_STATUSES = frozenset({"completed", "failed"})
-
-    def __init__(
-        self,
-        *,
-        max_turns: int = MAX_RETAINED_TURNS,
-        completed_ttl_seconds: float = COMPLETED_TURN_TTL_SECONDS,
-        clock: Callable[[], float] = monotonic,
-    ) -> None:
-        self._max_turns = max_turns
-        self._completed_ttl_seconds = completed_ttl_seconds
-        self._clock = clock
-        self._records: dict[str, _TurnRecord] = {}
-        self._lock = RLock()
-
-    def _purge_expired_locked(self, now: float) -> None:
-        expired_ids = [
-            turn_id
-            for turn_id, record in self._records.items()
-            if record.terminal_at is not None
-            and now - record.terminal_at >= self._completed_ttl_seconds
-        ]
-        for turn_id in expired_ids:
-            del self._records[turn_id]
-
-    def _evict_terminal_turns_locked(self, now: float) -> None:
-        self._purge_expired_locked(now)
-        while len(self._records) >= self._max_turns:
-            terminal_turns = [
-                (record.terminal_at or record.created_at, turn_id)
-                for turn_id, record in self._records.items()
-                if record.terminal_at is not None
-            ]
-            if not terminal_turns:
-                raise TurnCapacityError()
-            _, oldest_turn_id = min(terminal_turns)
-            del self._records[oldest_turn_id]
-
-    def create(self, turn: dict[str, str]) -> dict[str, str]:
-        turn_id = turn["id"]
-        now = self._clock()
+    def begin(self, job_id: str) -> Event:
         with self._lock:
-            self._evict_terminal_turns_locked(now)
-            if turn_id in self._records:
-                raise ValueError(f"Turn already exists: {turn_id}")
-            self._records[turn_id] = _TurnRecord(dict(turn), now)
-            return dict(turn)
+            self._purge()
+            existing = self._jobs.get(job_id)
+            if existing is not None:
+                return existing[0]
+            cancellation = Event()
+            self._jobs[job_id] = (cancellation, monotonic())
+            return cancellation
 
-    def set_terminal(self, turn_id: str, **fields: str) -> bool:
-        now = self._clock()
+    def cancel(self, job_id: str) -> None:
         with self._lock:
-            self._purge_expired_locked(now)
-            record = self._records.get(turn_id)
-            if record is None:
-                return False
-            record.turn = {**record.turn, **fields}
-            record.terminal_at = now
-            return True
+            self._purge()
+            cancellation, _ = self._jobs.get(job_id, (Event(), monotonic()))
+            cancellation.set()
+            self._jobs[job_id] = (cancellation, monotonic())
 
-    def __getitem__(self, turn_id: str) -> dict[str, str]:
-        now = self._clock()
+    def finish(self, job_id: str, cancellation: Event) -> None:
         with self._lock:
-            self._purge_expired_locked(now)
-            record = self._records[turn_id]
-            return dict(record.turn)
+            current = self._jobs.get(job_id)
+            if current is not None and current[0] is cancellation:
+                del self._jobs[job_id]
 
-    def __setitem__(self, turn_id: str, turn: dict[str, str]) -> None:
-        now = self._clock()
-        with self._lock:
-            if turn_id not in self._records:
-                self._evict_terminal_turns_locked(now)
-            terminal_at = (
-                now if turn.get("status") in self._TERMINAL_STATUSES else None
-            )
-            self._records[turn_id] = _TurnRecord(dict(turn), now, terminal_at)
+    def _purge(self) -> None:
+        cutoff = monotonic() - CANCELLED_JOB_TTL_SECONDS
+        for job_id, (cancellation, updated_at) in tuple(self._jobs.items()):
+            if cancellation.is_set() and updated_at < cutoff:
+                del self._jobs[job_id]
 
-    def __delitem__(self, turn_id: str) -> None:
-        with self._lock:
-            del self._records[turn_id]
 
-    def __iter__(self) -> Iterator[str]:
-        now = self._clock()
-        with self._lock:
-            self._purge_expired_locked(now)
-            return iter(tuple(self._records))
-
-    def __len__(self) -> int:
-        now = self._clock()
-        with self._lock:
-            self._purge_expired_locked(now)
-            return len(self._records)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._records.clear()
+transcription_jobs = TranscriptionJobRegistry()
 
 
 @asynccontextmanager
@@ -168,11 +96,11 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        close_response_providers()
         asr_runtime.unload()
 
 
 app = FastAPI(title="Resonance Backend", lifespan=lifespan)
-turns = TurnStore()
 
 
 class ResponseProviderSelection(BaseModel):
@@ -183,7 +111,7 @@ class ASRProviderSelection(BaseModel):
     provider: str
 
 
-class TextTurn(BaseModel):
+class TextPipelineRequest(BaseModel):
     text: str
     mode: Literal["agent", "transcription"]
 
@@ -194,7 +122,10 @@ class WindowsInsertionRequest(BaseModel):
     text: str
 
 
-def transcribe(file: UploadFile) -> str:
+def transcribe(
+    file: UploadFile,
+    cancelled: Callable[[], bool] | None = None,
+) -> str:
     try:
         file.file.seek(0, 2)
         upload_size = file.file.tell()
@@ -244,6 +175,7 @@ def transcribe(file: UploadFile) -> str:
             ) from error
 
         while True:
+            _raise_if_cancelled(cancelled)
             try:
                 samples = audio_file.read(
                     frames=TRANSCRIPTION_CHUNK_FRAMES,
@@ -262,20 +194,23 @@ def transcribe(file: UploadFile) -> str:
                 {
                     "array": samples.mean(axis=1),
                     "sampling_rate": SAMPLE_RATE,
-                }
+                },
+                cancelled,
             ).strip()
+            _raise_if_cancelled(cancelled)
             if transcript:
                 transcripts.append(transcript)
 
     return " ".join(transcripts)
 
 
-def create_turn(
+def process_text(
     transcript: str,
-    background_tasks: BackgroundTasks,
     response_provider: str,
     mode_id: str,
-) -> dict[str, str]:
+    cancelled: Callable[[], bool] | None = None,
+) -> dict[str, object]:
+    _raise_if_cancelled(cancelled)
     if not transcript:
         raise HTTPException(status_code=422, detail="No speech was detected.")
 
@@ -298,70 +233,80 @@ def create_turn(
             detail=f"The saved {mode_id} provider is not valid for this pipeline.",
         )
 
-    turn_id = f"turn_{uuid4().hex}"
-    turn = {
-        "id": turn_id,
-        "status": "responding",
-        "transcript": transcript,
-        "response_provider": response_provider,
-        "mode": mode_id,
-    }
-    try:
-        turns.create(turn)
-    except TurnCapacityError as error:
-        raise HTTPException(
-            status_code=503,
-            detail="Turn capacity is exhausted; wait for an active response to finish.",
-        ) from error
-    background_tasks.add_task(
-        run_response_stage,
-        turn_id,
-        transcript,
-        response_provider,
-        mode_id,
-    )
-    return turn
-
-
-def run_response_stage(
-    turn_id: str,
-    transcript: str,
-    response_provider: str,
-    mode_id: str,
-) -> None:
     try:
         mode = get_mode(mode_id)
         output_text = get_response_provider(response_provider).respond(
             message=transcript,
             instructions=mode.instructions,
             mode_id=mode_id,
+            cancelled=cancelled,
         )
+        _raise_if_cancelled(cancelled)
+    except (ASRCancelled, ResponseCancelled) as error:
+        raise HTTPException(status_code=409, detail="Transcription was cancelled.") from error
     except Exception as error:
-        turns.set_terminal(turn_id, status="failed", error=str(error))
-        return
+        if mode_id != "transcription":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Response processing failed: {error}",
+            ) from error
+        return {
+            "transcript": transcript,
+            "text": transcript,
+            "mode": mode_id,
+            "downstream": {
+                "provider": response_provider,
+                "status": "failed",
+                "error": str(error),
+            },
+        }
 
-    turns.set_terminal(turn_id, status="completed", response=output_text)
+    return {
+        "transcript": transcript,
+        "text": output_text,
+        "mode": mode_id,
+        "downstream": {
+            "provider": response_provider,
+            "status": "completed",
+        },
+    }
 
 
-@app.post("/v1/voice/turns", status_code=202)
-def create_voice_turn(
-    background_tasks: BackgroundTasks,
-    response: Response,
+@app.post("/v1/voice/process")
+def process_voice(
     file: Annotated[UploadFile, File()],
     mode: Literal["agent", "transcription"],
-) -> dict[str, str]:
+    job_id: Annotated[str | None, Header(alias="X-Resonance-Job-Id")] = None,
+) -> dict[str, object]:
     settings = load_settings()
     response_provider = settings[f"{mode}_provider"]
-    transcript = transcribe(file)
-    turn = create_turn(
-        transcript,
-        background_tasks,
-        response_provider,
-        mode,
-    )
-    response.headers["Location"] = f"/v1/turns/{turn['id']}"
-    response.headers["Retry-After"] = "1"
-    return turn
+    if mode != "transcription" or job_id is None:
+        transcript = transcribe(file)
+        return process_text(transcript, response_provider, mode)
+    if not job_id.strip() or len(job_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid transcription job ID.")
+
+    cancellation = transcription_jobs.begin(job_id)
+    try:
+        transcript = transcribe(file, cancellation.is_set)
+        return process_text(
+            transcript,
+            response_provider,
+            mode,
+            cancellation.is_set,
+        )
+    except ASRCancelled as error:
+        raise HTTPException(status_code=409, detail="Transcription was cancelled.") from error
+    finally:
+        transcription_jobs.finish(job_id, cancellation)
+
+
+@app.post("/v1/transcriptions/{job_id}/cancel")
+def cancel_transcription(job_id: str) -> dict[str, str]:
+    if not job_id.strip() or len(job_id) > 128:
+        raise HTTPException(status_code=422, detail="Invalid transcription job ID.")
+    transcription_jobs.cancel(job_id)
+    return {"status": "cancelled"}
 
 
 @app.post("/v1/audio/transcriptions")
@@ -371,30 +316,19 @@ def create_audio_transcription(
     return {"transcript": transcribe(file)}
 
 
-@app.post("/v1/text/turns", status_code=202)
-def create_text_turn(
-    request: TextTurn,
-    background_tasks: BackgroundTasks,
-    response: Response,
-) -> dict[str, str]:
+@app.post("/v1/text/process")
+def process_text_request(request: TextPipelineRequest) -> dict[str, object]:
     settings = load_settings()
-    turn = create_turn(
+    return process_text(
         request.text.strip(),
-        background_tasks,
         settings[f"{request.mode}_provider"],
         request.mode,
     )
-    response.headers["Location"] = f"/v1/turns/{turn['id']}"
-    response.headers["Retry-After"] = "1"
-    return turn
 
 
-@app.get("/v1/turns/{turn_id}")
-def get_turn(turn_id: str) -> dict[str, str]:
-    turn = turns.get(turn_id)
-    if turn is None:
-        raise HTTPException(status_code=404, detail="Turn not found.")
-    return turn
+def _raise_if_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise ASRCancelled("Transcription was cancelled.")
 
 
 @app.get("/v1/windows/foreground-target")

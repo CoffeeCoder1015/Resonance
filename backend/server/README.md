@@ -6,7 +6,7 @@ The Resonance backend has one processing path:
 ASR provider -> text -> Response provider -> text
 ```
 
-Every voice turn uses both provider contracts. Passthrough is a Response provider
+Every voice request uses both provider contracts. Passthrough is a Response provider
 that returns its input unchanged when the second stage is not needed.
 
 ## Run
@@ -33,44 +33,55 @@ provider loads `backend/model/LFM2.5-1.2B-Base.Q4_K_M.gguf` through
 `llama-cpp-python` with a 32k context. It passes the raw transcript directly to
 the completion API without instructions, chat messages, or prompt wrappers.
 Generation uses the context remaining after the input transcript rather than a
-fixed output-token cap. All other inference settings retain their defaults.
+fixed output-token cap. All model layers are offloaded through llama.cpp's
+Vulkan backend (`n_gpu_layers=-1`). Other inference settings retain their
+defaults, and verbose llama.cpp model logging is disabled.
+The llama.cpp model stays warm in a supervised child process. A native model
+crash or request deadline only terminates that child; the API remains alive and
+returns the raw ASR transcript using the normal degraded-success response. The
+worker unloads after five minutes without a completed refinement and is lazily
+started again by the next transcription request.
 
-Each text provider implements the same `respond` interface. Turn
+Each text provider implements the same `respond` interface. Pipeline
 orchestration does not know how a provider constructs commands or parses text.
 
 Agent mode can select OpenCode or Antigravity. Transcription mode can select
 LFM 2.5 Transcription or Passthrough. The mode on each API call chooses which
 saved provider setting is used; it is not global application state.
 
-## Voice turn
+## Voice processing
 
 ```powershell
-curl.exe -X POST "http://127.0.0.1:8000/v1/voice/turns?mode=transcription" `
+curl.exe -X POST "http://127.0.0.1:8000/v1/voice/process?mode=transcription" `
   -F "file=@C:\path\to\audio.wav"
 ```
 
 The input must be 16 kHz WAV audio. Long inputs are decoded and transcribed in
-bounded 60-second chunks, then joined before the response stage. ASR completes
-before the initial response; the text stage continues in the background:
+bounded 60-second chunks, then joined before the downstream stage. The request
+returns once both stages have finished:
 
 ```json
 {
-  "id": "turn_...",
-  "status": "responding",
   "transcript": "Transcribed text.",
-  "response_provider": "opencode",
-  "mode": "transcription"
+  "text": "Refined text.",
+  "mode": "transcription",
+  "downstream": {
+    "provider": "lfm-transcription",
+    "status": "completed"
+  }
 }
 ```
 
-Poll `GET /v1/turns/{id}` until the status is `completed` or `failed`. A
-completed turn contains the second stage's text in `response`.
-Turn state is process-local in this first version, so in-flight turns do not
-survive a backend restart.
+There is no server-side turn store or polling API. If transcription refinement
+fails, the request still succeeds with the raw ASR transcript in `text` and a
+`failed` downstream status. Agent-provider failures remain request failures.
+Desktop transcription requests carry an ephemeral job ID. Posting to
+`/v1/transcriptions/{job_id}/cancel` cancels ASR consumption, provider-lock
+waiting, and active LFM generation without retaining a result or conversation.
 
 Agent provider settings use `GET /v1/agent/providers` and
 `PUT /v1/agent/providers/current`. Transcription provider settings use
 `GET /v1/transcription/providers` and
 `PUT /v1/transcription/providers/current`. Pipeline mode is not saved
-application state: each voice or text turn must request either `agent` or
+application state: each voice or text request must specify either `agent` or
 `transcription`.

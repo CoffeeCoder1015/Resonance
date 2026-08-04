@@ -22,7 +22,7 @@ const API_PREFIX = '/api/';
 const BACKEND_PREFIX = '/v1/';
 const RAW_AUDIO_PATHS = new Set([
   '/api/audio/transcriptions',
-  '/api/voice/turns'
+  '/api/voice/process'
 ]);
 
 function jsonResponse(status: number, body: unknown) {

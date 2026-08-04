@@ -3,17 +3,17 @@
 The browser sends recorded audio to the same-origin website server:
 
 ```text
-POST /api/voice/turns
+POST /api/voice/process
 Content-Type: audio/wav
 ```
 
-The website server forwards the turn to the Resonance backend. The backend
-transcribes it, starts the selected agent CLI, and returns a turn ID. The browser
-polls `GET /api/turns/{id}` for the completed response.
+The website server forwards the request to the Resonance backend. The backend
+transcribes it, runs the selected downstream provider, and returns the final
+result in the same response. There is no turn store or polling loop.
 
-Long recordings are retained in full and encoded as bounded 60-second WAV
-chunks. The chunks are transcribed sequentially and combined into one voice
-turn, so holding the microphone beyond 60 seconds does not cut off the result.
+Long recordings are retained in one WAV upload. The backend decodes and
+transcribes it in bounded 60-second chunks, so holding the microphone beyond 60
+seconds does not cut off the result.
 
 Configuration:
 

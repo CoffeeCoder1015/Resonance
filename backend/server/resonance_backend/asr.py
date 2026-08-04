@@ -1,6 +1,6 @@
 import gc
 from threading import Lock
-from typing import Any, Protocol, TypedDict
+from typing import Any, Callable, Protocol, TypedDict
 
 import torch
 from transformers import pipeline
@@ -17,6 +17,10 @@ class AudioInput(TypedDict):
     sampling_rate: int
 
 
+class ASRCancelled(Exception):
+    """Raised when an active transcription no longer owns its request."""
+
+
 class ASRProvider(Protocol):
     id: str
     label: str
@@ -25,7 +29,11 @@ class ASRProvider(Protocol):
 
     def unload(self) -> None: ...
 
-    def transcribe(self, audio: AudioInput) -> str: ...
+    def transcribe(
+        self,
+        audio: AudioInput,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> str: ...
 
 
 class WhisperASR:
@@ -52,12 +60,18 @@ class WhisperASR:
             self._pipeline = None
         _release_model_memory()
 
-    def transcribe(self, audio: AudioInput) -> str:
+    def transcribe(
+        self,
+        audio: AudioInput,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> str:
         with self._lock:
+            _raise_if_cancelled(cancelled)
             if self._pipeline is None:
                 raise RuntimeError("Whisper ASR is not loaded.")
             with torch.inference_mode():
                 result = self._pipeline(audio, return_timestamps=True)
+            _raise_if_cancelled(cancelled)
 
         text = result.get("text") if isinstance(result, dict) else None
         if not isinstance(text, str):
@@ -103,8 +117,13 @@ class FasterWhisperASR:
             self._whisper_model = None
         _release_model_memory()
 
-    def transcribe(self, audio: AudioInput) -> str:
+    def transcribe(
+        self,
+        audio: AudioInput,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> str:
         with self._lock:
+            _raise_if_cancelled(cancelled)
             if self._whisper_model is None:
                 raise RuntimeError("Faster Whisper ASR is not loaded.")
             segments, _ = self._whisper_model.transcribe(
@@ -112,7 +131,11 @@ class FasterWhisperASR:
                 beam_size=self._beam_size,
                 vad_filter=False,
             )
-            text = " ".join(segment.text.strip() for segment in segments).strip()
+            text_parts = []
+            for segment in segments:
+                _raise_if_cancelled(cancelled)
+                text_parts.append(segment.text.strip())
+            text = " ".join(text_parts).strip()
 
         return text
 
@@ -121,3 +144,8 @@ def _release_model_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _raise_if_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise ASRCancelled("Transcription was cancelled.")

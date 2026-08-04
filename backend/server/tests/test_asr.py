@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from resonance_backend import app as app_module
 from resonance_backend.asr import (
+    ASRCancelled,
     ASRProvider,
     FasterWhisperASR,
     WhisperASR,
@@ -259,6 +260,30 @@ class ASRTests(unittest.TestCase):
             ),
             "",
         )
+
+    @patch("resonance_backend.asr._FasterWhisperModel")
+    def test_faster_whisper_stops_between_segments_when_cancelled(
+        self,
+        model_factory: Mock,
+    ) -> None:
+        model_factory.return_value.transcribe.return_value = (
+            iter([Mock(text="First"), Mock(text="Stale")]),
+            Mock(),
+        )
+        provider = FasterWhisperASR()
+        provider.load()
+        checks = 0
+
+        def cancelled() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks >= 3
+
+        with self.assertRaisesRegex(ASRCancelled, "cancelled"):
+            provider.transcribe(
+                {"array": object(), "sampling_rate": 16_000},
+                cancelled,
+            )
 
 if __name__ == "__main__":
     unittest.main()

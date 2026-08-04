@@ -1,9 +1,7 @@
 import {
-  createTextTurn,
-  createVoiceTurn,
-  transcribeAudio,
+  processVoice,
   type PipelineMode,
-  type Turn
+  type PipelineResult
 } from './backend';
 import { MicrophoneCapture } from './microphoneCapture';
 
@@ -74,22 +72,13 @@ export class VoicePipeline {
     return true;
   }
 
-  async createTurn(
-    audio: Blob | readonly Blob[],
+  process(
+    audio: Blob,
     mode: PipelineMode,
     signal?: AbortSignal
-  ): Promise<Turn> {
+  ): Promise<PipelineResult> {
     this.assertActive();
-    if (!Array.isArray(audio) || audio.length === 1) {
-      return createVoiceTurn(Array.isArray(audio) ? audio[0] : audio, mode, signal);
-    }
-
-    const transcripts: string[] = [];
-    for (const chunk of audio) {
-      const transcript = (await transcribeAudio(chunk, signal)).trim();
-      if (transcript) transcripts.push(transcript);
-    }
-    return createTextTurn(transcripts.join(' '), mode, signal);
+    return processVoice(audio, mode, signal);
   }
 
   async discardAndPause(capture = this.captureValue) {

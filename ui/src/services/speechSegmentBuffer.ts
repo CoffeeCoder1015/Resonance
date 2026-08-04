@@ -1,21 +1,8 @@
-import { encodePcm16Wav, VAD_SAMPLE_RATE } from './audioEncoding.ts';
-
-const DEFAULT_CHUNK_SECONDS = 60;
-
-interface SpeechSegmentBufferOptions {
-  chunkSeconds?: number;
-}
+import { encodePcm16Wav } from './audioEncoding.ts';
 
 export class SpeechSegmentBuffer {
   private readonly segments: Float32Array[] = [];
-  private readonly chunkSamples: number;
   private speechSamples = 0;
-
-  constructor({
-    chunkSeconds = DEFAULT_CHUNK_SECONDS
-  }: SpeechSegmentBufferOptions = {}) {
-    this.chunkSamples = Math.max(1, Math.round(chunkSeconds * VAD_SAMPLE_RATE));
-  }
 
   get hasSpeech() {
     return this.speechSamples > 0;
@@ -29,53 +16,16 @@ export class SpeechSegmentBuffer {
     this.speechSamples += retained.length;
   }
 
-  drainWavChunks(): Blob[] {
-    if (!this.hasSpeech) return [];
-
-    const chunks: Blob[] = [];
-    let parts: Float32Array[] = [];
-    let partSamples = 0;
-
-    const flush = () => {
-      if (partSamples === 0) return;
-      const output = new Float32Array(partSamples);
-      let offset = 0;
-      for (const part of parts) {
-        output.set(part, offset);
-        offset += part.length;
-      }
-      chunks.push(encodePcm16Wav(output));
-      parts = [];
-      partSamples = 0;
-    };
-
-    const appendSamples = (samples: Float32Array) => {
-      let offset = 0;
-      while (offset < samples.length) {
-        const length = Math.min(
-          samples.length - offset,
-          this.chunkSamples - partSamples
-        );
-        parts.push(samples.subarray(offset, offset + length));
-        partSamples += length;
-        offset += length;
-        if (partSamples === this.chunkSamples) flush();
-      }
-    };
-
-    this.segments.forEach(segment => {
-      if (
-        partSamples > 0 &&
-        partSamples + segment.length > this.chunkSamples
-      ) {
-        flush();
-      }
-      appendSamples(segment);
-    });
-    flush();
-
+  drainWav(): Blob | null {
+    if (!this.hasSpeech) return null;
+    const output = new Float32Array(this.speechSamples);
+    let offset = 0;
+    for (const segment of this.segments) {
+      output.set(segment, offset);
+      offset += segment.length;
+    }
     this.clear();
-    return chunks;
+    return encodePcm16Wav(output);
   }
 
   clear() {

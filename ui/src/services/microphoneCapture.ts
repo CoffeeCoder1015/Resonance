@@ -127,14 +127,13 @@ export class MicrophoneCapture {
     this.assertActive();
   }
 
-  async finish(): Promise<Blob[] | null> {
+  async finish(): Promise<Blob | null> {
     this.assertActive();
     this.finishing = true;
 
     try {
       if (this.vad.listening) await this.vad.pause();
-      const chunks = this.segments.drainWavChunks();
-      return chunks.length > 0 ? chunks : null;
+      return this.segments.drainWav();
     } finally {
       this.setStreamEnabled(false);
       this.finishing = false;

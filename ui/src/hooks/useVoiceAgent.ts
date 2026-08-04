@@ -5,10 +5,7 @@ import type {
   VoiceInputMode,
   VoicePhase
 } from '../types/voice';
-import {
-  createTextTurn,
-  waitForTurn
-} from '../services/backend';
+import { processText } from '../services/backend';
 import { MicrophoneCapture } from '../services/microphoneCapture';
 import { VoicePipeline } from '../services/voicePipeline';
 import { voicePhaseToAgentState } from '../services/voiceState';
@@ -198,20 +195,8 @@ export function useVoiceAgent() {
     [appendTurn, setPhase, settleTurn, speak]
   );
 
-  const receiveAgentResponse = useCallback(
-    async (turnId: string, generation: number, signal: AbortSignal) => {
-      if (generation !== turnGenerationRef.current) return;
-
-      setPhase('responding');
-      const turn = await waitForTurn(turnId, signal);
-      if (generation !== turnGenerationRef.current) return;
-      startResponseOutput(turn.response!, generation);
-    },
-    [setPhase, startResponseOutput]
-  );
-
   const transcribeRecording = useCallback(
-    async (audio: Blob | readonly Blob[], generation: number) => {
+    async (audio: Blob, generation: number) => {
       if (generation !== turnGenerationRef.current) return;
 
       setPhase('transcribing');
@@ -219,11 +204,12 @@ export function useVoiceAgent() {
       turnAbortRef.current = abortController;
 
       try {
-        const turn = await pipeline.createTurn(audio, 'agent', abortController.signal);
+        const result = await pipeline.process(audio, 'agent', abortController.signal);
         if (generation !== turnGenerationRef.current) return;
-        if (!turn.transcript) throw new Error('No speech was detected.');
-        appendTurn('user', turn.transcript);
-        await receiveAgentResponse(turn.id, generation, abortController.signal);
+        if (!result.transcript) throw new Error('No speech was detected.');
+        appendTurn('user', result.transcript);
+        setPhase('responding');
+        startResponseOutput(result.text, generation);
       } catch (error) {
         if (generation !== turnGenerationRef.current) return;
 
@@ -238,8 +224,9 @@ export function useVoiceAgent() {
     },
     [
       appendTurn,
-      receiveAgentResponse,
-      settleTurn
+      setPhase,
+      settleTurn,
+      startResponseOutput
     ]
   );
 
@@ -493,8 +480,9 @@ export function useVoiceAgent() {
         turnAbortRef.current = abortController;
         setPhase('responding');
         try {
-          const turn = await createTextTurn(text, 'agent', abortController.signal);
-          await receiveAgentResponse(turn.id, generation, abortController.signal);
+          const result = await processText(text, 'agent', abortController.signal);
+          if (generation !== turnGenerationRef.current) return;
+          startResponseOutput(result.text, generation);
         } catch (error) {
           if (generation !== turnGenerationRef.current) return;
           console.error('Text turn failed.', error);
@@ -510,9 +498,9 @@ export function useVoiceAgent() {
     [
       appendTurn,
       prepareForTurn,
-      receiveAgentResponse,
       setPhase,
-      settleTurn
+      settleTurn,
+      startResponseOutput
     ]
   );
 

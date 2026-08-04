@@ -10,6 +10,8 @@ from resonance_backend.response_providers import (
     LFMTranscriptionResponseProvider,
     OpenCodeResponseProvider,
     PassthroughResponseProvider,
+    ResponseCancelled,
+    _run_lfm_worker,
     _parse_opencode_error,
     _parse_opencode_response,
     get_response_provider,
@@ -26,6 +28,89 @@ PROMPT = (
     "[Resonance instructions]\nReturn plain text.\n\n"
     "[User message]\nHello"
 )
+
+
+class FakeConnection:
+    def __init__(self, responses=()) -> None:
+        self.responses = list(responses)
+        self.sent = []
+        self.closed = False
+
+    def poll(self, timeout) -> bool:
+        return bool(self.responses)
+
+    def recv(self):
+        return self.responses.pop(0)
+
+    def send(self, value) -> None:
+        self.sent.append(value)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeProcess:
+    def __init__(self) -> None:
+        self.started = False
+        self.alive = False
+        self.terminated = False
+
+    def start(self) -> None:
+        self.started = True
+        self.alive = True
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.alive = False
+
+    def join(self, timeout=None) -> None:
+        pass
+
+
+class FakeProcessContext:
+    def __init__(self, responses) -> None:
+        self.parent = FakeConnection(responses)
+        self.child = FakeConnection()
+        self.process = FakeProcess()
+        self.process_calls = []
+
+    def Pipe(self):
+        return self.parent, self.child
+
+    def Process(self, **kwargs):
+        self.process_calls.append(kwargs)
+        return self.process
+
+
+class FakeTimer:
+    def __init__(self, interval, function, args=()) -> None:
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.cancelled = False
+        self.daemon = False
+
+    def start(self) -> None:
+        pass
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def fire(self) -> None:
+        self.function(*self.args)
+
+
+class FakeTimerFactory:
+    def __init__(self) -> None:
+        self.timers = []
+
+    def __call__(self, interval, function, args=()):
+        timer = FakeTimer(interval, function, args)
+        self.timers.append(timer)
+        return timer
 
 
 class ResponseProviderTests(unittest.TestCase):
@@ -108,44 +193,70 @@ class ResponseProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Authentication required"):
                 OpenCodeResponseProvider().respond("Hello", INSTRUCTIONS)
 
-    @patch("resonance_backend.response_providers.Llama")
-    def test_lfm_uses_raw_completion_and_reuses_the_model(self, llama) -> None:
+    def test_lfm_reuses_its_worker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "model.gguf"
             model_path.touch()
-            model = llama.return_value
-            model.return_value = {
-                "choices": [{"text": "  Formatted transcript.\n"}]
-            }
-            provider = LFMTranscriptionResponseProvider(model_path)
+            context = FakeProcessContext(
+                [
+                    ("ready", None),
+                    ("result", {"choices": [{"text": "First."}]}),
+                    ("result", {"choices": [{"text": "Second."}]}),
+                ]
+            )
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+            )
 
             first = provider.respond(
                 "um raw transcript",
                 "Instructions that must not reach the model.",
             )
             second = provider.respond("second raw transcript", "Ignored again.")
+            provider.close()
 
-        self.assertEqual(first, "  Formatted transcript.\n")
-        self.assertEqual(second, "  Formatted transcript.\n")
+        self.assertEqual(first, "First.")
+        self.assertEqual(second, "Second.")
+        self.assertEqual(len(context.process_calls), 1)
+        self.assertEqual(
+            context.parent.sent[:2],
+            [
+                ("generate", "um raw transcript"),
+                ("generate", "second raw transcript"),
+            ],
+        )
+
+    @patch("resonance_backend.response_providers.Llama")
+    def test_lfm_worker_uses_raw_completion(self, llama) -> None:
+        connection = FakeConnection(
+            [("generate", "raw transcript"), ("stop", None)]
+        )
+        llama.return_value.return_value = {
+            "choices": [{"text": "Formatted transcript."}]
+        }
+
+        _run_lfm_worker(connection, "model.gguf")
+
         llama.assert_called_once_with(
-            model_path=str(model_path),
+            model_path="model.gguf",
             n_ctx=32_768,
+            n_gpu_layers=-1,
+            verbose=False,
+        )
+        llama.return_value.assert_called_once_with(
+            "raw transcript",
+            max_tokens=None,
         )
         self.assertEqual(
-            model.call_args_list[0].args,
-            ("um raw transcript",),
-        )
-        self.assertEqual(
-            model.call_args_list[0].kwargs,
-            {"max_tokens": None},
-        )
-        self.assertEqual(
-            model.call_args_list[1].args,
-            ("second raw transcript",),
-        )
-        self.assertEqual(
-            model.call_args_list[1].kwargs,
-            {"max_tokens": None},
+            connection.sent,
+            [
+                ("ready", None),
+                (
+                    "result",
+                    {"choices": [{"text": "Formatted transcript."}]},
+                ),
+            ],
         )
 
     def test_lfm_is_unavailable_without_its_model(self) -> None:
@@ -158,16 +269,127 @@ class ResponseProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "model was not found"):
                 provider.respond("raw transcript", "Ignored")
 
-    @patch("resonance_backend.response_providers.Llama")
-    def test_lfm_rejects_an_empty_completion(self, llama) -> None:
+    def test_lfm_rejects_an_empty_completion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "model.gguf"
             model_path.touch()
-            llama.return_value.return_value = {"choices": [{"text": "  "}]}
-            provider = LFMTranscriptionResponseProvider(model_path)
+            context = FakeProcessContext(
+                [("ready", None), ("result", {"choices": [{"text": "  "}]})]
+            )
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+            )
 
             with self.assertRaisesRegex(RuntimeError, "empty response"):
                 provider.respond("raw transcript", "Ignored")
+            provider.close()
+
+    def test_lfm_timeout_terminates_the_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model.gguf"
+            model_path.touch()
+            context = FakeProcessContext([("ready", None)])
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "deadline"):
+                provider.respond("raw transcript", "Ignored", timeout_seconds=1)
+
+        self.assertTrue(context.process.terminated)
+        self.assertIsNone(provider._process)
+
+    def test_lfm_deadline_includes_waiting_for_the_provider_lock(self) -> None:
+        provider = LFMTranscriptionResponseProvider(Path("unused.gguf"))
+        provider._lock.acquire()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "deadline"):
+                provider.respond(
+                    "raw transcript",
+                    "Ignored",
+                    timeout_seconds=0.01,
+                )
+        finally:
+            provider._lock.release()
+
+    def test_lfm_worker_unloads_after_its_idle_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model.gguf"
+            model_path.touch()
+            context = FakeProcessContext(
+                [("ready", None), ("result", {"choices": [{"text": "Done."}]})]
+            )
+            timers = FakeTimerFactory()
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+                idle_timeout_seconds=30,
+                timer_factory=timers,
+            )
+
+            self.assertEqual(provider.respond("raw transcript", "Ignored"), "Done.")
+            self.assertEqual(timers.timers[0].interval, 30)
+            self.assertTrue(timers.timers[0].daemon)
+
+            timers.timers[0].fire()
+
+        self.assertTrue(context.process.terminated)
+        self.assertIsNone(provider._process)
+
+    def test_lfm_activity_invalidates_an_older_idle_timer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model.gguf"
+            model_path.touch()
+            context = FakeProcessContext(
+                [
+                    ("ready", None),
+                    ("result", {"choices": [{"text": "First."}]}),
+                    ("result", {"choices": [{"text": "Second."}]}),
+                ]
+            )
+            timers = FakeTimerFactory()
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+                timer_factory=timers,
+            )
+
+            provider.respond("first", "Ignored")
+            provider.respond("second", "Ignored")
+            timers.timers[0].fire()
+            self.assertIs(provider._process, context.process)
+
+            timers.timers[1].fire()
+
+        self.assertTrue(context.process.terminated)
+
+    def test_lfm_cancellation_terminates_active_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model.gguf"
+            model_path.touch()
+            context = FakeProcessContext([("ready", None)])
+            provider = LFMTranscriptionResponseProvider(
+                model_path,
+                process_context=context,
+            )
+            checks = 0
+
+            def cancelled() -> bool:
+                nonlocal checks
+                checks += 1
+                return checks >= 3
+
+            with self.assertRaisesRegex(ResponseCancelled, "cancelled"):
+                provider.respond(
+                    "raw transcript",
+                    "Ignored",
+                    cancelled=cancelled,
+                )
+
+        self.assertTrue(context.process.terminated)
+        self.assertIsNone(provider._process)
 
     def test_response_providers_are_selected_by_id(self) -> None:
         self.assertIsInstance(

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   app,
   BrowserWindow,
+  clipboard,
   ipcMain,
   Menu,
   protocol,
@@ -25,12 +26,17 @@ import {
   type HotkeySettings,
   type InsertTextResult,
   type PillStatus,
+  type ProcessTranscriptionResult,
   type RuntimeCommand,
   type RuntimeSnapshot,
   type UpdateHotkeysResult,
   type VoiceInputOwner
 } from './contract.js';
 import { installAppProtocol } from './protocol.js';
+import {
+  cancelTranscription,
+  processTranscription
+} from './transcription.js';
 import {
   createExpandedWindow,
   createPillWindow,
@@ -78,6 +84,12 @@ let expandedWindowLoad: Promise<BrowserWindow> | null = null;
 let pillWindowLoad: Promise<BrowserWindow> | null = null;
 const voiceInputOwnership = new VoiceInputOwnership();
 const insertionTargets = new Map<string, StoredInsertionTarget>();
+let activeTranscription: {
+  id: string;
+  sessionId: string;
+  abortController: AbortController;
+  cancelled: boolean;
+} | null = null;
 
 const IDLE_PILL_HIT_WIDTH = 48;
 const IDLE_PILL_HIT_HEIGHT = 48;
@@ -90,6 +102,16 @@ const HOVER_POLL_NEAR_MS = 50;
 const HOVER_POLL_MID_MS = 125;
 const HOVER_POLL_FAR_MS = 400;
 const VOICE_INPUT_REVOCATION_TIMEOUT_MS = 5_000;
+const MAX_TRANSCRIPTION_AUDIO_BYTES = 25 * 1024 * 1024;
+
+function cancelActiveTranscription(sessionId?: string) {
+  const active = activeTranscription;
+  if (!active || (sessionId !== undefined && active.sessionId !== sessionId)) return;
+  active.cancelled = true;
+  active.abortController.abort();
+  insertionTargets.delete(active.sessionId);
+  void cancelTranscription(active.id);
+}
 
 const MODIFIER_ORDER: Record<HotkeyModifier, number> = {
   ctrl: 0,
@@ -777,6 +799,7 @@ function installIpc() {
   ipcMain.on(CHANNELS.cancelTextInsertion, (event, sessionId: unknown) => {
     if (event.sender !== pillWindow?.webContents || typeof sessionId !== 'string') return;
     insertionTargets.delete(sessionId);
+    cancelActiveTranscription(sessionId);
   });
   ipcMain.handle(
     CHANNELS.insertTextAtCaret,
@@ -788,6 +811,94 @@ function installIpc() {
         } satisfies InsertTextResult;
       }
       return insertTextAtCaret(sessionId, text);
+    }
+  );
+  ipcMain.handle(
+    CHANNELS.processTranscription,
+    async (event, sessionId: unknown, audio: unknown) => {
+      if (event.sender !== pillWindow?.webContents) {
+        return {
+          status: 'failed',
+          reason: 'Transcription may only be requested by the transcription pill.'
+        } satisfies ProcessTranscriptionResult;
+      }
+      if (
+        typeof sessionId !== 'string' ||
+        !audio ||
+        typeof audio !== 'object' ||
+        !(audio as { data?: unknown }).data ||
+        !((audio as { data: unknown }).data instanceof ArrayBuffer) ||
+        typeof (audio as { contentType?: unknown }).contentType !== 'string'
+      ) {
+        return {
+          status: 'failed',
+          reason: 'The transcription audio is invalid.'
+        } satisfies ProcessTranscriptionResult;
+      }
+
+      const payload = audio as { data: ArrayBuffer; contentType: string };
+      if (
+        payload.data.byteLength === 0 ||
+        payload.data.byteLength > MAX_TRANSCRIPTION_AUDIO_BYTES
+      ) {
+        return {
+          status: 'failed',
+          reason: 'The transcription audio is empty or too large.'
+        } satisfies ProcessTranscriptionResult;
+      }
+
+      cancelActiveTranscription();
+      const job = {
+        id: randomUUID(),
+        sessionId,
+        abortController: new AbortController(),
+        cancelled: false
+      };
+      activeTranscription = job;
+
+      try {
+        const result = await processTranscription(
+          payload.data,
+          payload.contentType,
+          job.id,
+          job.abortController.signal
+        );
+        if (job.cancelled || activeTranscription !== job) {
+          return { status: 'cancelled' } satisfies ProcessTranscriptionResult;
+        }
+        const insertion = await insertTextAtCaret(sessionId, result.text);
+        if (job.cancelled || activeTranscription !== job) {
+          return { status: 'cancelled' } satisfies ProcessTranscriptionResult;
+        }
+        if (insertion.status === 'inserted') {
+          return {
+            status: 'inserted',
+            transcript: result.transcript,
+            text: result.text,
+            downstream: result.downstream
+          } satisfies ProcessTranscriptionResult;
+        }
+
+        clipboard.writeText(result.text);
+        return {
+          status: 'copied',
+          transcript: result.transcript,
+          text: result.text,
+          downstream: result.downstream,
+          reason: `${insertion.reason || 'Automatic insertion failed.'} Final text was copied to the clipboard.`
+        } satisfies ProcessTranscriptionResult;
+      } catch (error) {
+        insertionTargets.delete(sessionId);
+        if (job.cancelled || activeTranscription !== job) {
+          return { status: 'cancelled' } satisfies ProcessTranscriptionResult;
+        }
+        return {
+          status: 'failed',
+          reason: error instanceof Error ? error.message : 'Transcription failed.'
+        } satisfies ProcessTranscriptionResult;
+      } finally {
+        if (activeTranscription === job) activeTranscription = null;
+      }
     }
   );
   ipcMain.on(CHANNELS.publishSnapshot, (event, nextSnapshot: RuntimeSnapshot) => {
@@ -1039,6 +1150,7 @@ if (!hasSingleInstanceLock) {
   app.on('before-quit', event => {
     if (quitAfterPillPositionSaved) return;
     quitting = true;
+    cancelActiveTranscription();
     insertionTargets.clear();
     stopPillHoverTracking();
     uninstallGlobalHotkey();

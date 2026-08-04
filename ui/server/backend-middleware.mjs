@@ -1,15 +1,14 @@
 import { createBackendClient } from './backend-client.mjs';
 
-const VOICE_TURNS_ROUTE = '/api/voice/turns';
+const VOICE_PROCESS_ROUTE = '/api/voice/process';
 const AUDIO_TRANSCRIPTIONS_ROUTE = '/api/audio/transcriptions';
-const TEXT_TURNS_ROUTE = '/api/text/turns';
+const TEXT_PROCESS_ROUTE = '/api/text/process';
 const AGENT_PROVIDERS_ROUTE = '/api/agent/providers';
 const CURRENT_AGENT_PROVIDER_ROUTE = '/api/agent/providers/current';
 const TRANSCRIPTION_PROVIDERS_ROUTE = '/api/transcription/providers';
 const CURRENT_TRANSCRIPTION_PROVIDER_ROUTE = '/api/transcription/providers/current';
 const ASR_PROVIDERS_ROUTE = '/api/asr/providers';
 const CURRENT_ASR_PROVIDER_ROUTE = '/api/asr/providers/current';
-const TURN_ROUTE = /^\/api\/turns\/([^/]+)$/;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
 const DEFAULT_BACKEND_TIMEOUT_MS = 120_000;
@@ -76,14 +75,14 @@ async function readJson(request) {
 }
 
 function routeRequest(pathname, method) {
-  if (pathname === VOICE_TURNS_ROUTE) {
-    return method === 'POST' ? 'createVoiceTurn' : 'methodNotAllowed';
+  if (pathname === VOICE_PROCESS_ROUTE) {
+    return method === 'POST' ? 'processVoice' : 'methodNotAllowed';
   }
   if (pathname === AUDIO_TRANSCRIPTIONS_ROUTE) {
     return method === 'POST' ? 'createAudioTranscription' : 'methodNotAllowed';
   }
-  if (pathname === TEXT_TURNS_ROUTE) {
-    return method === 'POST' ? 'createTextTurn' : 'methodNotAllowed';
+  if (pathname === TEXT_PROCESS_ROUTE) {
+    return method === 'POST' ? 'processText' : 'methodNotAllowed';
   }
   if (pathname === AGENT_PROVIDERS_ROUTE) {
     return method === 'GET' ? 'getAgentProviders' : 'methodNotAllowed';
@@ -102,10 +101,6 @@ function routeRequest(pathname, method) {
   }
   if (pathname === CURRENT_ASR_PROVIDER_ROUTE) {
     return method === 'PUT' ? 'setASRProvider' : 'methodNotAllowed';
-  }
-  const turnMatch = pathname.match(TURN_ROUTE);
-  if (turnMatch) {
-    return method === 'GET' ? { name: 'getTurn', turnId: turnMatch[1] } : 'methodNotAllowed';
   }
   return null;
 }
@@ -146,9 +141,9 @@ export function createBackendMiddleware({
 
     try {
       let result;
-      if (route === 'createVoiceTurn' || route === 'createAudioTranscription') {
-        const mode = route === 'createVoiceTurn' ? requestUrl.searchParams.get('mode') : null;
-        if (route === 'createVoiceTurn' && mode !== 'agent' && mode !== 'transcription') {
+      if (route === 'processVoice' || route === 'createAudioTranscription') {
+        const mode = route === 'processVoice' ? requestUrl.searchParams.get('mode') : null;
+        if (route === 'processVoice' && mode !== 'agent' && mode !== 'transcription') {
           throw createHttpError('A valid pipeline mode is required.', 422);
         }
         const contentType = String(request.headers['content-type'] || '');
@@ -162,17 +157,17 @@ export function createBackendMiddleware({
           filename: getFilename(contentType),
           signal: abortController.signal
         };
-        result = route === 'createVoiceTurn'
-          ? await client.createVoiceTurn({
+        result = route === 'processVoice'
+          ? await client.processVoice({
               ...upload,
               mode
             })
           : await client.createAudioTranscription({
               ...upload
             });
-      } else if (route === 'createTextTurn') {
+      } else if (route === 'processText') {
         const body = await readJson(request);
-        result = await client.createTextTurn({
+        result = await client.processText({
           text: body.text,
           mode: body.mode,
           signal: abortController.signal
@@ -201,23 +196,10 @@ export function createBackendMiddleware({
           provider: body.provider,
           signal: abortController.signal
         });
-      } else {
-        result = await client.getTurn({
-          turnId: route.turnId,
-          signal: abortController.signal
-        });
       }
 
       if (!response.destroyed && !response.writableEnded) {
-        if (route === 'createVoiceTurn' || route === 'createTextTurn') {
-          response.setHeader('Location', `/api/turns/${result.id}`);
-          response.setHeader('Retry-After', '1');
-        }
-        sendJson(
-          response,
-          route === 'createVoiceTurn' || route === 'createTextTurn' ? 202 : 200,
-          result
-        );
+        sendJson(response, 200, result);
       }
     } catch (error) {
       if (response.destroyed || response.writableEnded) return;

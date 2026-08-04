@@ -7,10 +7,15 @@ windows:
 - the persistent transparent transcription pill.
 
 The expanded renderer and transcription pill each own an independent voice
-runtime. Each renderer acquires its own microphone stream, runs its own VAD and
-server-request lifecycle, and drives its own avatar. Electron IPC coordinates
-window state and text insertion, but does not relay microphone visualization
-data between the renderers.
+runtime. Each renderer acquires its own microphone stream, runs its own VAD,
+and drives its own avatar. Electron main owns the pill's completed audio request
+and insertion lifecycle so processing continues if the pill renderer is
+recreated. It does not relay microphone visualization data between renderers.
+
+Each pill transcription is assigned an ephemeral job ID in Electron main.
+Starting another transcription, revoking voice input, closing the pill, or
+quitting cancels the previous backend job. A canceled job is never inserted and
+is never copied to the clipboard.
 
 ## Tray lifecycle
 
@@ -82,13 +87,13 @@ write occurred in the meantime.
 - Renderer HTML, JavaScript, CSS, and `/vad` ONNX/WASM/worklet files are packaged
   resources served by `resonance://app`. VAD stays in the renderer and does not
   send model bytes through IPC.
-- Lifecycle snapshots, pill actions, window visibility, and click-through state
-  use the narrow preload IPC bridge.
-- The finite `/api` JSON and audio-upload calls use the custom protocol handler,
+- Lifecycle snapshots, pill actions, window visibility, click-through state,
+  and the pill's final audio upload use the narrow preload IPC bridge.
+- Expanded-window `/api` JSON and audio-upload calls use the custom protocol handler,
   which proxies to the configured loopback backend without exposing that origin
   to renderer code. This retains Fetch `AbortSignal` cancellation and avoids an
   additional large-binary IPC contract.
-- There are currently no health, readiness, SSE, WebSocket, or streaming routes.
+- There are no turn polling, SSE, WebSocket, or streaming routes.
   Backend readiness is therefore detected by the first API request.
 - Microphone capture remains a renderer Web Media operation. Electron grants
   only the `media` permission to the packaged application origin (and local Vite

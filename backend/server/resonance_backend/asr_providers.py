@@ -1,6 +1,8 @@
 from threading import Lock
+from typing import Callable
 
 from resonance_backend.asr import (
+    ASRCancelled,
     ASRProvider,
     AudioInput,
     FasterWhisperASR,
@@ -91,11 +93,22 @@ class ASRRuntime:
 
             self._current = selected
 
-    def transcribe(self, audio: AudioInput) -> str:
-        with self._lock:
+    def transcribe(
+        self,
+        audio: AudioInput,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> str:
+        while not self._lock.acquire(timeout=0.1):
+            if cancelled is not None and cancelled():
+                raise ASRCancelled("Transcription was cancelled.")
+        try:
             if self._current is None:
                 raise RuntimeError("No ASR provider is loaded.")
-            return self._current.transcribe(audio)
+            if cancelled is None:
+                return self._current.transcribe(audio)
+            return self._current.transcribe(audio, cancelled)
+        finally:
+            self._lock.release()
 
     def _get_provider(self, provider_id: str) -> ASRProvider:
         try:

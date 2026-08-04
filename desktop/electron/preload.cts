@@ -13,10 +13,25 @@ type RuntimeSnapshot = {
 type PillStatus = 'idle' | 'recording' | 'processing' | 'error';
 type InsertTextResult =
   | { status: 'inserted' }
-  | { status: 'failed'; reason: string };
+    | { status: 'failed'; reason: string }
+    | { status: 'cancelled' };
 type BeginTextInsertionResult =
   | { status: 'ready'; sessionId: string }
   | { status: 'unavailable'; reason: string };
+type TranscriptionAudio = { data: ArrayBuffer; contentType: string };
+type ProcessTranscriptionResult =
+  | {
+      status: 'inserted' | 'copied';
+      transcript: string;
+      text: string;
+      downstream: {
+        provider: string;
+        status: 'completed' | 'failed';
+        error?: string;
+      };
+      reason?: string;
+    }
+  | { status: 'failed'; reason: string };
 type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 type HotkeyCombo = { modifiers: HotkeyModifier[]; key?: string };
 type HotkeySettings = {
@@ -44,6 +59,7 @@ const CHANNELS = {
   beginTextInsertion: 'insertion:begin',
   cancelTextInsertion: 'insertion:cancel',
   insertTextAtCaret: 'insertion:insert-at-caret',
+  processTranscription: 'transcription:process',
   getHotkeys: 'hotkeys:get',
   updateHotkeys: 'hotkeys:update'
 } as const;
@@ -113,6 +129,12 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
       sessionId,
       text
     ) as Promise<InsertTextResult>,
+  processTranscription: (sessionId: string, audio: TranscriptionAudio) =>
+    ipcRenderer.invoke(
+      CHANNELS.processTranscription,
+      sessionId,
+      audio
+    ) as Promise<ProcessTranscriptionResult>,
   getHotkeys: () => ipcRenderer.invoke(CHANNELS.getHotkeys) as Promise<HotkeySettings>,
   updateHotkeys: (settings: HotkeySettings) =>
     ipcRenderer.invoke(CHANNELS.updateHotkeys, settings) as Promise<UpdateHotkeysResult>
