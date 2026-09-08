@@ -1,9 +1,9 @@
 import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
-import { AgentState, VisualTheme } from '../types/voice';
+import { VoiceState, VisualTheme } from '../types/voice';
 
 interface AvatarCanvasProps {
-  state: AgentState;
+  state: VoiceState;
   visualTheme: VisualTheme;
   volume: number;
   frequencies: Uint8Array;
@@ -107,7 +107,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   // Live-signal refs (the render loop mounts once and reads through these)
   const smoothVolRef = useRef<number>(0);
   const timeRef = useRef<number>(0);
-  const stateRef = useRef<AgentState>(state);
+  const stateRef = useRef<VoiceState>(state);
   stateRef.current = state;
   const themeRef = useRef<VisualTheme>(visualTheme);
   themeRef.current = visualTheme;
@@ -570,8 +570,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
       const fAvg = fSum / (Math.min(24, freqs.length) * 255);
 
       const isListening = activeState === 'listening';
-      const isSpeaking = activeState === 'speaking';
-      const isBurst = isListening || isSpeaking;
+      const isBurst = isListening;
 
       // Visibility toggles
       if (clayMeshRef.current) clayMeshRef.current.visible = activeTheme === 'clay-blob';
@@ -645,9 +644,9 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
         nbodyGroupRef.current.rotation.y = t * 0.15;
         nbodyGroupRef.current.rotation.z = Math.sin(t * 0.3) * 0.1;
 
-        const springK = isListening ? 0.052 : isSpeaking ? 0.046 : 0.062;
-        const damping = isListening ? 0.9 : isSpeaking ? 0.88 : 0.86;
-        const maxRadius = isListening ? 4.55 : isSpeaking ? 4.0 : 3.65;
+        const springK = isListening ? 0.052 : 0.062;
+        const damping = isListening ? 0.9 : 0.86;
+        const maxRadius = isListening ? 4.55 : 3.65;
 
         for (let i = 0; i < bodies.length; i++) {
           const b1 = bodies[i];
@@ -772,11 +771,10 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
           const fIdx = frequencyBandCount > 0 ? (i * 3) % frequencyBandCount : 0;
           const fVal = (freqs[fIdx] || 0) / 255;
           const idleWave = Math.sin(t * 0.9 + p.phase * 1.7);
-          const dialogueRate = isSpeaking ? 4.8 : 2.6;
+          const dialogueRate = 2.6;
           const dialogueWave = Math.sin(t * dialogueRate - p.phase * 1.35);
           const bandEnergy = THREE.MathUtils.clamp(vol * 0.65 + fVal * 0.7, 0, 1);
           const activity =
-            isSpeaking ? THREE.MathUtils.clamp(0.3 + bandEnergy * 0.85, 0, 1) :
             isListening ? THREE.MathUtils.clamp(0.14 + bandEnergy * 0.55, 0, 0.62) :
             activeState === 'processing' ? 0.2 :
             0;
@@ -786,10 +784,10 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
             activity * (0.09 + Math.max(0, dialogueWave) * 0.23);
           const targetFlap =
             -0.018 -
-            activity * (0.1 + (dialogueWave + 1) * (isSpeaking ? 0.15 : 0.075));
+            activity * (0.1 + (dialogueWave + 1) * 0.075);
           const targetSway =
             idleWave * 0.018 +
-            dialogueWave * activity * (isSpeaking ? 0.14 : 0.065);
+            dialogueWave * activity * 0.065;
           const targetStretch =
             activity * (0.025 + Math.max(0, dialogueWave) * 0.085);
 

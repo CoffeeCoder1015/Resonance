@@ -3,7 +3,7 @@ import { AvatarCanvas } from '../AvatarCanvas';
 import { cn } from '../../utils/cn';
 import {
   DESIGN_VARIANTS,
-  type AgentState,
+  type VoiceState,
   type VisualTheme
 } from '../../types/voice';
 import { PillWaveform } from './PillWaveform';
@@ -18,7 +18,7 @@ export interface TranscriptionPillProps {
   status: PillStatus;
   elapsedSeconds?: number;
   visualTheme: VisualTheme;
-  agentState?: AgentState;
+  voiceState?: VoiceState;
   volume?: number;
   frequencies?: Uint8Array;
   microphoneLevel?: number;
@@ -67,7 +67,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
   status,
   elapsedSeconds = 0,
   visualTheme,
-  agentState,
+  voiceState,
   volume = 0,
   frequencies = EMPTY_FREQUENCIES,
   microphoneLevel = 0,
@@ -81,8 +81,8 @@ export const TranscriptionPill = memo(function TranscriptionPill({
   const presentation = getPillPresentation(status);
   const avatarTheme =
     DESIGN_VARIANTS.find(variant => variant.id === visualTheme) ?? DESIGN_VARIANTS[0];
-  const resolvedAgentState =
-    agentState ??
+  const resolvedVoiceState =
+    voiceState ??
     (status === 'recording'
       ? 'listening'
       : status === 'processing'
@@ -148,7 +148,7 @@ export const TranscriptionPill = memo(function TranscriptionPill({
         >
           <div className="absolute -inset-2">
             <AvatarCanvas
-              state={resolvedAgentState}
+              state={resolvedVoiceState}
               visualTheme={visualTheme}
               volume={volume}
               frequencies={frequencies}

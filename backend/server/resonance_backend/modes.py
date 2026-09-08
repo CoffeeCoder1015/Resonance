@@ -40,16 +40,6 @@ TRANSCRIPTION_INSTRUCTIONS = (
 
 
 MODES = {
-    "agent": Mode(
-        id="agent",
-        label="Agent",
-        instructions=(
-            "Respond in concise, natural spoken English. Return plain text only. "
-            "Do not use Markdown, headings, lists, tables, code fences, raw URLs, "
-            "or formatting symbols. The response will be displayed and spoken "
-            "exactly as written."
-        ),
-    ),
     "transcription": Mode(
         id="transcription",
         label="Transcription",

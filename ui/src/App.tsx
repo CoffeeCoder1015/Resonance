@@ -1,239 +1,91 @@
 import { useEffect, useState } from 'react';
-import { useVoiceAgent } from './hooks/useVoiceAgent';
+import { Check, Settings2 } from 'lucide-react';
 import { AvatarCanvas } from './components/AvatarCanvas';
-import { TranscriptLog } from './components/TranscriptLog';
-import { MinimalControlBar } from './components/MinimalControlBar';
-import { DESIGN_VARIANTS, VoicePhase } from './types/voice';
+import { ProviderSettingsPanel } from './components/ProviderSettingsPanel';
+import { DESIGN_VARIANTS, type VisualTheme } from './types/voice';
 import type { HotkeySettings, UpdateHotkeysResult } from './types/desktop';
-import {
-  eventIsComboMemberKeyUp,
-  eventMatchesCombo
-} from './services/hotkeys';
 
-function getStatusDescription(phase: VoicePhase) {
-  switch (phase) {
-    case 'acquiring-microphone':
-      return { text: 'MIC ACCESS', dot: 'bg-[#ffde00]', badge: 'bg-white' };
-    case 'listening':
-      return { text: 'LISTENING', dot: 'bg-[#ff007f]', badge: 'bg-[#ffde00]' };
-    case 'transcribing':
-      return { text: 'TRANSCRIBING', dot: 'bg-[#007bff]', badge: 'bg-[#e9d8fd]' };
-    case 'responding':
-      return { text: 'THINKING', dot: 'bg-[#007bff]', badge: 'bg-[#e9d8fd]' };
-    case 'speaking':
-      return { text: 'SPEAKING', dot: 'bg-[#00e676]', badge: 'bg-[#c6f6d5]' };
-    case 'idle':
-      return { text: 'STANDBY', dot: 'bg-zinc-900', badge: 'bg-white' };
-  }
-}
+const PREVIEW_FREQUENCIES = new Uint8Array(64);
 
 export function App() {
-  const {
-    state,
-    phase,
-    visualTheme,
-    transcript,
-    speechOutputEnabled,
-    agentModeEnabled,
-    currentSpeechVolume,
-    audioFrequencies,
-    toggleListening,
-    beginHoldToTalk,
-    endHoldToTalk,
-    enableAgentMode,
-    disableAgentMode,
-    submitTextTurn,
-    toggleSpeechOutput,
-    selectTheme,
-    stopAgentSpeech
-  } = useVoiceAgent();
+  const [visualTheme, setVisualTheme] = useState<VisualTheme>('clay-blob');
   const [hotkeys, setHotkeys] = useState<HotkeySettings | null>(null);
-  const [isWindowActive, setIsWindowActive] = useState(true);
+  const [active, setActive] = useState(document.hasFocus());
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (bridge) {
-      let disposed = false;
-      const unsubscribe = bridge.subscribeWindowFocus(focused => {
-        if (!disposed) setIsWindowActive(focused);
-      });
-      void bridge.getWindowFocus().then(focused => {
-        if (!disposed) setIsWindowActive(focused);
-      });
-      return () => {
-        disposed = true;
-        unsubscribe();
-      };
-    }
-
-    const updateWindowActivity = () => {
-      setIsWindowActive(document.visibilityState === 'visible' && document.hasFocus());
-    };
-    window.addEventListener('focus', updateWindowActivity);
-    window.addEventListener('blur', updateWindowActivity);
-    document.addEventListener('visibilitychange', updateWindowActivity);
-    updateWindowActivity();
-    return () => {
-      window.removeEventListener('focus', updateWindowActivity);
-      window.removeEventListener('blur', updateWindowActivity);
-      document.removeEventListener('visibilitychange', updateWindowActivity);
-    };
-  }, []);
-
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-    let disposed = false;
-    void bridge.getHotkeys().then(settings => {
-      if (!disposed) setHotkeys(settings);
-    });
-    return () => {
-      disposed = true;
-    };
-  }, []);
-
-  const updateHotkeys = async (
-    next: HotkeySettings
-  ): Promise<UpdateHotkeysResult> => {
     const bridge = window.resonanceDesktop;
     if (!bridge) {
-      return { status: 'failed', reason: 'Desktop integration is unavailable.' };
+      setError('Open Resonance on your desktop to configure the transcription bar.');
+      return;
     }
+    let disposed = false;
+    const unsubscribe = bridge.subscribeWindowFocus(setActive);
+    void Promise.all([bridge.getSnapshot(), bridge.getHotkeys(), bridge.getWindowFocus()])
+      .then(([snapshot, settings, focused]) => {
+        if (disposed) return;
+        setVisualTheme(snapshot.visualTheme);
+        setHotkeys(settings);
+        setActive(focused);
+      })
+      .catch(error => {
+        if (!disposed) setError(error instanceof Error ? error.message : 'Settings could not be loaded.');
+      });
+    return () => { disposed = true; unsubscribe(); };
+  }, []);
+
+  const updateHotkeys = async (next: HotkeySettings): Promise<UpdateHotkeysResult> => {
+    const bridge = window.resonanceDesktop;
+    if (!bridge) return { status: 'failed', reason: 'Desktop integration is unavailable.' };
     const result = await bridge.updateHotkeys(next);
     if (result.status === 'ok') setHotkeys(result.settings);
     return result;
   };
 
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-
-    bridge.publishSnapshot({
-      visualTheme
-    });
-  }, [visualTheme]);
-
-  useEffect(() => {
-    const isEditableTarget = (target: EventTarget | null) =>
-      target instanceof HTMLElement &&
-      Boolean(
-        target.closest('input, textarea, button, select, a, [contenteditable="true"]')
-      );
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || isEditableTarget(e.target)) return;
-      if (hotkeys && eventMatchesCombo(e, hotkeys.inWindowHoldToTalk)) {
-        e.preventDefault();
-        void beginHoldToTalk();
-      } else if (e.key === 'Escape') {
-        stopAgentSpeech();
-      }
-    };
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (isEditableTarget(e.target)) return;
-      if (hotkeys && eventIsComboMemberKeyUp(e, hotkeys.inWindowHoldToTalk)) {
-        e.preventDefault();
-        void endHoldToTalk();
-      }
-    };
-
-    const handleWindowBlur = () => {
-      void endHoldToTalk();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        void endHoldToTalk();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('blur', handleWindowBlur);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('blur', handleWindowBlur);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [beginHoldToTalk, endHoldToTalk, hotkeys, stopAgentSpeech]);
-
-  const statusInfo = getStatusDescription(phase);
-  const activeVariant = DESIGN_VARIANTS.find(v => v.id === visualTheme) || DESIGN_VARIANTS[0];
-  const toggleAgentMode = () => {
-    void (agentModeEnabled ? disableAgentMode() : enableAgentMode());
+  const selectTheme = (theme: VisualTheme) => {
+    setVisualTheme(theme);
+    window.resonanceDesktop?.publishSnapshot({ visualTheme: theme });
   };
+  const variant = DESIGN_VARIANTS.find(item => item.id === visualTheme) ?? DESIGN_VARIANTS[0];
 
   return (
-    <div
-      style={{
-        backgroundColor: activeVariant.bgHex,
-        backgroundImage: `radial-gradient(circle at 50% -10%, ${activeVariant.accentHex}55 0%, transparent 48%), linear-gradient(135deg, rgba(255,255,255,0.26), transparent 58%)`
-      }}
-      className="relative w-screen h-[100dvh] overflow-hidden flex flex-col select-none font-sans text-zinc-950 transition-colors duration-500"
-    >
-      <div
-        style={{ backgroundColor: activeVariant.accentHex }}
-        className="absolute -top-40 left-1/2 -translate-x-1/2 w-[75vw] h-[75vw] rounded-full blur-[90px] opacity-20 pointer-events-none transition-colors duration-700"
-      />
-
-      <header
-        aria-live="polite"
-        className="desktop-window-drag-region w-full pt-4 sm:pt-6 px-4 flex justify-center items-center z-20 pointer-events-none shrink-0"
-      >
-        <div
-          className={`flex items-center gap-2.5 px-4 py-1.5 rounded-full border-[3px] border-black ${statusInfo.badge} neo-shadow font-mono text-[11px] font-black uppercase tracking-widest text-black`}
-        >
-          <span
-            className={`w-3 h-3 rounded-full border-2 border-black ${statusInfo.dot} ${
-              phase !== 'idle' ? 'animate-pulse' : ''
-            }`}
-          />
-          <span>{statusInfo.text}</span>
-          <span className="px-2 py-0.5 bg-black text-white rounded-md text-[9px]">
-            {activeVariant.badge}
-          </span>
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#fff8e7] font-sans text-zinc-950">
+      <header className="desktop-window-drag-region flex shrink-0 items-center gap-4 border-b-[3px] border-black bg-[#ffde00] px-7 py-5 pr-36">
+        <Settings2 className="h-8 w-8 shrink-0" strokeWidth={2.5} />
+        <div>
+          <p className="font-mono text-[10px] font-black uppercase tracking-[0.2em]">Resonance</p>
+          <h1 className="text-2xl font-black tracking-tight">Transcription bar settings</h1>
         </div>
       </header>
-
-      <main className="relative flex-1 w-full flex flex-col items-center overflow-hidden z-10 min-h-0">
-        <div className="w-full h-full flex flex-col items-center min-h-0">
-          <div className="flex-1 w-full flex items-center justify-center min-h-0">
-            <AvatarCanvas
-              state={state}
-              visualTheme={visualTheme}
-              volume={currentSpeechVolume}
-              frequencies={audioFrequencies}
-              onAvatarClick={toggleListening}
-              active={isWindowActive}
-            />
-          </div>
-
-          <div className="w-full shrink-0 flex items-end justify-center pb-32 sm:pb-36 px-2">
-            <TranscriptLog transcript={transcript} agentState={state} />
-          </div>
+      <main className="min-h-0 flex-1 overflow-y-auto p-5 sm:p-7">
+        <p className="mb-6 text-sm font-semibold text-black/65">Dictate into the app you’re using. Make the transcription bar your own here.</p>
+        {error && <p role="alert" className="mb-5 rounded-xl border-[3px] border-black bg-[#ffdad6] p-4 text-sm font-bold">{error}</p>}
+        <div className="grid items-start gap-6 lg:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.2fr)]">
+          <section aria-label="Transcription settings" className="rounded-3xl border-[3px] border-black bg-white neo-shadow">
+            <ProviderSettingsPanel hotkeys={hotkeys} onUpdateHotkeys={updateHotkeys} />
+          </section>
+          <section aria-labelledby="appearance-heading" className="rounded-3xl border-[3px] border-black bg-white p-5 neo-shadow">
+            <p className="font-mono text-[9px] font-black uppercase tracking-[0.16em] text-black/45">Appearance</p>
+            <h2 id="appearance-heading" className="text-xl font-black tracking-tight">Bar theme</h2>
+            <p className="mt-1 text-sm font-semibold text-black/55">Choose the character that moves with your voice.</p>
+            <div style={{ backgroundColor: variant.bgHex }} className="relative my-5 h-48 overflow-hidden rounded-2xl border-[3px] border-black">
+              <span className="absolute left-3 top-3 z-10 rounded-md border-2 border-black bg-white px-2 py-1 font-mono text-[9px] font-black uppercase">Preview</span>
+              <AvatarCanvas state="idle" visualTheme={visualTheme} volume={0.05} frequencies={PREVIEW_FREQUENCIES} preview active={active} powerPreference="default" maxFrameRate={60} />
+            </div>
+            <div className="grid grid-cols-2 gap-3" role="group" aria-label="Bar themes">
+              {DESIGN_VARIANTS.map(item => (
+                <button key={item.id} type="button" aria-pressed={item.id === visualTheme} onClick={() => selectTheme(item.id)} style={{ backgroundColor: item.bgHex }} className="flex min-h-24 items-start justify-between gap-2 rounded-2xl border-[3px] border-black p-4 text-left neo-press focus-visible:outline-4 focus-visible:outline-offset-4 focus-visible:outline-[#007bff]">
+                  <span>
+                    <span className="mb-2 inline-block rounded-md bg-black px-2 py-1 font-mono text-[9px] font-black text-white">{item.badge}</span>
+                    <span className="block text-sm font-black leading-tight">{item.name}</span>
+                  </span>
+                  {item.id === visualTheme && <Check aria-hidden="true" className="h-5 w-5 shrink-0" strokeWidth={3} />}
+                </button>
+              ))}
+            </div>
+          </section>
         </div>
       </main>
-
-      <MinimalControlBar
-        state={state}
-        visualTheme={visualTheme}
-        volume={currentSpeechVolume}
-        frequencies={audioFrequencies}
-        avatarActive={isWindowActive}
-        speechOutputEnabled={speechOutputEnabled}
-        agentModeEnabled={agentModeEnabled}
-        hotkeys={hotkeys}
-        onUpdateHotkeys={updateHotkeys}
-        onToggleListen={toggleListening}
-        onSubmitTextTurn={submitTextTurn}
-        onToggleSpeechOutput={toggleSpeechOutput}
-        onToggleAgentMode={toggleAgentMode}
-        onSelectTheme={selectTheme}
-        onStopSpeech={stopAgentSpeech}
-      />
     </div>
   );
 }

@@ -206,7 +206,7 @@ export class MicrophoneCapture {
     if (
       !this.finishing &&
       !this.readyNotified &&
-      (this.mode === 'tap' || this.mode === 'agent')
+      this.mode === 'tap'
     ) {
       this.readyNotified = true;
       queueMicrotask(this.onUtterance);

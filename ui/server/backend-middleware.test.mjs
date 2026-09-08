@@ -53,7 +53,7 @@ test('aborts backend work when the client disconnects', async () => {
   };
   const origin = await startServer({ client, timeoutMs: 5_000 });
   const controller = new AbortController();
-  const request = fetch(`${origin}/api/voice/process?mode=agent`, {
+  const request = fetch(`${origin}/api/voice/process?mode=transcription`, {
     method: 'POST',
     headers: { 'Content-Type': 'audio/wav' },
     body: new Uint8Array([1, 2, 3]),
@@ -80,7 +80,7 @@ test('times out backend work and returns a gateway timeout', async () => {
   };
   const origin = await startServer({ client, timeoutMs: 20 });
 
-  const response = await fetch(`${origin}/api/voice/process?mode=agent`, {
+  const response = await fetch(`${origin}/api/voice/process?mode=transcription`, {
     method: 'POST',
     headers: { 'Content-Type': 'audio/wav' },
     body: new Uint8Array([1, 2, 3])
@@ -91,19 +91,9 @@ test('times out backend work and returns a gateway timeout', async () => {
   assert.deepEqual(await response.json(), { error: 'Backend request timed out.' });
 });
 
-test('routes agent and transcription provider reads and changes separately', async () => {
+test('routes transcription provider reads and changes', async () => {
   const calls = [];
   const client = {
-    getAgentProviders() {
-      return {
-        current: 'opencode',
-        providers: [{ id: 'opencode', label: 'OpenCode', available: true }]
-      };
-    },
-    setAgentProvider({ provider }) {
-      calls.push(['agent', provider]);
-      return { provider };
-    },
     getTranscriptionProviders() {
       return {
         current: 'lfm-transcription',
@@ -124,18 +114,6 @@ test('routes agent and transcription provider reads and changes separately', asy
   };
   const origin = await startServer({ client });
 
-  const listResponse = await fetch(`${origin}/api/agent/providers`);
-  assert.equal(listResponse.status, 200);
-  assert.equal((await listResponse.json()).current, 'opencode');
-
-  const changeResponse = await fetch(`${origin}/api/agent/providers/current`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: 'antigravity' })
-  });
-  assert.equal(changeResponse.status, 200);
-  assert.deepEqual(await changeResponse.json(), { provider: 'antigravity' });
-
   const transcriptionResponse = await fetch(`${origin}/api/transcription/providers`);
   assert.equal((await transcriptionResponse.json()).current, 'lfm-transcription');
   const changeTranscription = await fetch(
@@ -148,35 +126,39 @@ test('routes agent and transcription provider reads and changes separately', asy
   );
   assert.deepEqual(await changeTranscription.json(), { provider: 'lfm-transcription' });
   assert.deepEqual(calls, [
-    ['agent', 'antigravity'],
     ['transcription', 'lfm-transcription']
   ]);
 });
 
-test('routes keyboard text processing as one response', async () => {
-  const calls = [];
-  const client = {
-    processText({ text, mode }) {
-      calls.push({ text, mode });
-      return {
-        transcript: text,
-        text: 'Response',
-        mode,
-        downstream: { provider: 'opencode', status: 'completed' }
-      };
-    }
-  };
+test('removed conversation routes do not call the backend', async () => {
+  let called = false;
+  const client = new Proxy({}, { get() { return () => { called = true; return {}; }; } });
   const origin = await startServer({ client });
+  for (const [route, method] of [
+    ['/api/agent/providers', 'GET'],
+    ['/api/agent/providers/current', 'PUT'],
+    ['/api/text/process', 'POST']
+  ]) {
+    const response = await fetch(origin + route, {
+      method,
+      ...(method === 'GET' ? {} : {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'Hello', mode: 'agent', provider: 'opencode' })
+      })
+    });
+    assert.equal(response.status, 404, route);
+  }
+  assert.equal(called, false);
+});
 
-  const response = await fetch(`${origin}/api/text/process`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: 'Hello', mode: 'agent' })
+test('rejects agent voice mode before contacting the backend', async () => {
+  let called = false;
+  const origin = await startServer({ client: { processVoice() { called = true; return {}; } } });
+  const response = await fetch(origin + '/api/voice/process?mode=agent', {
+    method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: new Uint8Array([1, 2, 3])
   });
-
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).text, 'Response');
-  assert.deepEqual(calls, [{ text: 'Hello', mode: 'agent' }]);
+  assert.equal(response.status, 422);
+  assert.equal(called, false);
 });
 
 test('routes ASR provider reads and changes', async () => {

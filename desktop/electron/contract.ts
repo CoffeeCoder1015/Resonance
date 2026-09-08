@@ -46,11 +46,8 @@ export type RuntimeCommand =
   | 'toggle-transcription'
   | 'begin-transcription'
   | 'end-transcription'
-  | 'begin-hold-to-talk'
-  | 'end-hold-to-talk'
   | 'show-expanded';
 
-export type VoiceInputOwner = 'desktop' | 'pill';
 
 export type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 
@@ -86,7 +83,6 @@ export interface HotkeyCombo {
 
 export interface HotkeySettings {
   globalHoldToTalk: HotkeyCombo;
-  inWindowHoldToTalk: HotkeyCombo;
 }
 
 export type UpdateHotkeysResult =
@@ -100,10 +96,6 @@ export const CHANNELS = {
   command: 'runtime:command',
   pillHover: 'pill:hover',
   pillStatus: 'pill:status',
-  claimVoiceInput: 'voice-input:claim',
-  releaseVoiceInput: 'voice-input:release',
-  voiceInputRevoked: 'voice-input:revoked',
-  voiceInputRevokedAck: 'voice-input:revoked-ack',
   getWindowFocus: 'desktop:get-window-focus',
   windowFocus: 'desktop:window-focus',
   beginTextInsertion: 'insertion:begin',
@@ -119,6 +111,5 @@ export const DEFAULT_SNAPSHOT: RuntimeSnapshot = {
 };
 
 export const DEFAULT_HOTKEYS: HotkeySettings = {
-  globalHoldToTalk: { modifiers: ['ctrl', 'meta'] },
-  inWindowHoldToTalk: { modifiers: [], key: 'space' }
+  globalHoldToTalk: { modifiers: ['ctrl', 'meta'] }
 };

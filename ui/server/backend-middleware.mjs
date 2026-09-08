@@ -2,9 +2,6 @@ import { createBackendClient } from './backend-client.mjs';
 
 const VOICE_PROCESS_ROUTE = '/api/voice/process';
 const AUDIO_TRANSCRIPTIONS_ROUTE = '/api/audio/transcriptions';
-const TEXT_PROCESS_ROUTE = '/api/text/process';
-const AGENT_PROVIDERS_ROUTE = '/api/agent/providers';
-const CURRENT_AGENT_PROVIDER_ROUTE = '/api/agent/providers/current';
 const TRANSCRIPTION_PROVIDERS_ROUTE = '/api/transcription/providers';
 const CURRENT_TRANSCRIPTION_PROVIDER_ROUTE = '/api/transcription/providers/current';
 const ASR_PROVIDERS_ROUTE = '/api/asr/providers';
@@ -81,15 +78,6 @@ function routeRequest(pathname, method) {
   if (pathname === AUDIO_TRANSCRIPTIONS_ROUTE) {
     return method === 'POST' ? 'createAudioTranscription' : 'methodNotAllowed';
   }
-  if (pathname === TEXT_PROCESS_ROUTE) {
-    return method === 'POST' ? 'processText' : 'methodNotAllowed';
-  }
-  if (pathname === AGENT_PROVIDERS_ROUTE) {
-    return method === 'GET' ? 'getAgentProviders' : 'methodNotAllowed';
-  }
-  if (pathname === CURRENT_AGENT_PROVIDER_ROUTE) {
-    return method === 'PUT' ? 'setAgentProvider' : 'methodNotAllowed';
-  }
   if (pathname === TRANSCRIPTION_PROVIDERS_ROUTE) {
     return method === 'GET' ? 'getTranscriptionProviders' : 'methodNotAllowed';
   }
@@ -143,7 +131,7 @@ export function createBackendMiddleware({
       let result;
       if (route === 'processVoice' || route === 'createAudioTranscription') {
         const mode = route === 'processVoice' ? requestUrl.searchParams.get('mode') : null;
-        if (route === 'processVoice' && mode !== 'agent' && mode !== 'transcription') {
+        if (route === 'processVoice' && mode !== 'transcription') {
           throw createHttpError('A valid pipeline mode is required.', 422);
         }
         const contentType = String(request.headers['content-type'] || '');
@@ -165,21 +153,6 @@ export function createBackendMiddleware({
           : await client.createAudioTranscription({
               ...upload
             });
-      } else if (route === 'processText') {
-        const body = await readJson(request);
-        result = await client.processText({
-          text: body.text,
-          mode: body.mode,
-          signal: abortController.signal
-        });
-      } else if (route === 'getAgentProviders') {
-        result = await client.getAgentProviders({ signal: abortController.signal });
-      } else if (route === 'setAgentProvider') {
-        const body = await readJson(request);
-        result = await client.setAgentProvider({
-          provider: body.provider,
-          signal: abortController.signal
-        });
       } else if (route === 'getTranscriptionProviders') {
         result = await client.getTranscriptionProviders({ signal: abortController.signal });
       } else if (route === 'setTranscriptionProvider') {

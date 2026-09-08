@@ -15,7 +15,6 @@ test('maps the voice lifecycle to pill presentation states', () => {
   assert.equal(voicePhaseToPillStatus('listening'), 'recording');
   assert.equal(voicePhaseToPillStatus('transcribing'), 'processing');
   assert.equal(voicePhaseToPillStatus('responding'), 'processing');
-  assert.equal(voicePhaseToPillStatus('speaking'), 'idle');
 });
 
 test('formats bounded elapsed time', () => {

@@ -113,7 +113,7 @@ function ElectronPillRenderer() {
         status={status}
         elapsedSeconds={elapsedSeconds}
         visualTheme={snapshot.visualTheme}
-        agentState={state}
+        voiceState={state}
         volume={volume}
         frequencies={frequencies}
         microphoneLevel={volume}

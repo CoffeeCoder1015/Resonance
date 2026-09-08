@@ -1,14 +1,13 @@
-export type AgentState = 'idle' | 'listening' | 'processing' | 'speaking';
+export type VoiceState = 'idle' | 'listening' | 'processing';
 
-export type VoiceInputMode = 'hold' | 'tap' | 'agent';
+export type VoiceInputMode = 'hold' | 'tap';
 
 export type VoicePhase =
   | 'idle'
   | 'acquiring-microphone'
   | 'listening'
   | 'transcribing'
-  | 'responding'
-  | 'speaking';
+  | 'responding';
 
 export type VisualTheme =
   | 'clay-blob'       // 3D Bouncy Ceramic Clay Blob (Canary Yellow mood)
@@ -32,7 +31,7 @@ export const DESIGN_VARIANTS: ThemeDescriptor[] = [
   {
     id: 'clay-blob',
     name: '3D Bouncy Ceramic Clay',
-    philosophy: 'Claymorphism & Vinyl Art Toys. A playful matte peach clay sphere that bounces and grows exuberant organic acoustic knobs when energized by dialogue.',
+    philosophy: 'Claymorphism & Vinyl Art Toys. A playful matte peach clay sphere that bounces and grows exuberant organic acoustic knobs when energized by your voice.',
     badge: 'Ceramic Clay',
     bgHex: '#FFF480', // Sunny Canary Yellow
     accentHex: '#FF69B4', // Hot Pink
@@ -50,7 +49,7 @@ export const DESIGN_VARIANTS: ThemeDescriptor[] = [
   {
     id: 'memphis-bloom',
     name: '3D Memphis Geometric Bloom',
-    philosophy: 'Ettore Sottsass\' 1981 Memphis movement. Bold primary cones, cubes, and tori orbit a black core, blooming outward in clashing asymmetric confetti when the agent speaks.',
+    philosophy: 'Ettore Sottsass\' 1981 Memphis movement. Bold primary cones, cubes, and tori orbit a black core, blooming outward in clashing asymmetric confetti when you speak.',
     badge: 'Memphis Bloom',
     bgHex: '#FFADAD', // Coral Pop
     accentHex: '#03045E', // Deep Navy
@@ -84,17 +83,3 @@ export const DESIGN_VARIANTS: ThemeDescriptor[] = [
     textColor: 'text-zinc-950'
   }
 ];
-
-export interface DialogueTurn {
-  id: string;
-  sender: 'user' | 'agent';
-  text: string;
-  timestamp: string;
-  isStreaming?: boolean;
-}
-
-export interface AudioSignal {
-  volume: number;
-  frequencies: Uint8Array;
-  state: AgentState;
-}

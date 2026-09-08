@@ -1,34 +1,30 @@
 # Resonance desktop shell
 
-This package is the single Electron application for Resonance. It owns two
-windows:
+This Electron application owns a settings window and the persistent transparent
+transcription bar. The settings window opens directly to speech-recognition,
+transcript-cleanup, global-shortcut, and bar-theme controls. It has no recording
+or conversational runtime. Theme selection is retained by Electron main while
+settings is closed and reopened; it is not persisted across app restarts.
 
-- the existing expanded UI;
-- the persistent transparent transcription pill.
+Only the bar acquires the microphone and runs VAD. Its model is prewarmed without
+microphone access. Stopping dictation ends the physical track and suspends Web
+Audio while keeping the model warm. Failed startup/resume discards the recorder
+so a later attempt can create a fresh one.
 
-The expanded renderer and transcription pill each own an independent voice
-runtime. Each renderer acquires its own microphone stream, runs its own VAD,
-and drives its own avatar. Electron main owns the pill's completed audio request
-and insertion lifecycle so processing continues if the pill renderer is
-recreated. It does not relay microphone visualization data between renderers.
-
-Each pill transcription is assigned an ephemeral job ID in Electron main.
-Starting another transcription, revoking voice input, closing the pill, or
-quitting cancels the previous backend job. A canceled job is never inserted and
-is never copied to the clipboard.
+Electron main owns transcription jobs and text insertion. Starting another job,
+hiding the bar, or quitting cancels pending work. Canceled results are not inserted
+or copied to the clipboard.
 
 ## Tray lifecycle
 
-Closing the expanded window destroys only the desktop renderer and releases its
-microphone, VAD, and WebGL resources. The transcription pill remains independent
-and continues running until **Hide transcription pill** destroys its renderer
-and stops its microphone, VAD, WebGL, and global input hook. Opening Resonance
-again recreates only the expanded renderer; **Show transcription pill** creates
-the pill renderer independently when it was previously hidden.
+Closing settings releases its renderer and preview resources; the bar continues
+running. **Open settings** recreates the settings window. **Hide transcription
+pill** destroys the bar, stops its microphone and global input hook, and cancels
+pending transcription. **Show transcription pill** recreates it.
 
 ## Development
 
-Start the existing Python backend when voice/model features are needed:
+Start the Python backend for transcription and provider settings:
 
 ```powershell
 ..\backend\server\run-server.ps1
@@ -89,12 +85,12 @@ write occurred in the meantime.
   send model bytes through IPC.
 - Lifecycle snapshots, pill actions, window visibility, click-through state,
   and the pill's final audio upload use the narrow preload IPC bridge.
-- Expanded-window `/api` JSON and audio-upload calls use the custom protocol handler,
+- Settings-window `/api` JSON calls use the custom protocol handler,
   which proxies to the configured loopback backend without exposing that origin
   to renderer code. This retains Fetch `AbortSignal` cancellation and avoids an
   additional large-binary IPC contract.
 - There are no turn polling, SSE, WebSocket, or streaming routes.
   Backend readiness is therefore detected by the first API request.
 - Microphone capture remains a renderer Web Media operation. Electron grants
-  only the `media` permission to the packaged application origin (and local Vite
-  origins in development).
+  the `media` permission only to the bar at the packaged application origin
+  (or its local Vite origin in development). Settings cannot acquire a microphone.

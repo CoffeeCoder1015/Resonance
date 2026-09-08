@@ -1,7 +1,4 @@
-import json
 import multiprocessing
-import shutil
-import subprocess
 import time
 from pathlib import Path
 from threading import Lock, Timer
@@ -9,10 +6,7 @@ from typing import Any, Callable, Protocol
 
 from llama_cpp import Llama
 
-from resonance_backend.provider_ids import (
-    AGENT_PROVIDER_IDS,
-    TRANSCRIPTION_PROVIDER_IDS,
-)
+from resonance_backend.provider_ids import TRANSCRIPTION_PROVIDER_IDS
 
 LFM_TRANSCRIPTION_MODEL_PATH = (
     Path(__file__).resolve().parents[2]
@@ -60,7 +54,7 @@ class ResponseProvider(Protocol):
         message: str,
         instructions: str,
         timeout_seconds: int = 120,
-        mode_id: str = "agent",
+        mode_id: str = "transcription",
         cancelled: Callable[[], bool] | None = None,
     ) -> str: ...
 
@@ -81,7 +75,7 @@ class PassthroughResponseProvider:
         message: str,
         instructions: str,
         timeout_seconds: int = 120,
-        mode_id: str = "agent",
+        mode_id: str = "transcription",
         cancelled: Callable[[], bool] | None = None,
     ) -> str:
         _raise_if_cancelled(cancelled)
@@ -269,84 +263,9 @@ class LFMTranscriptionResponseProvider:
             process.join(timeout=2)
 
 
-class OpenCodeResponseProvider:
-    id = "opencode"
-    label = "OpenCode"
-    command = "opencode"
-
-    def is_available(self) -> bool:
-        return shutil.which(self.command) is not None
-
-    def respond(
-        self,
-        message: str,
-        instructions: str,
-        timeout_seconds: int = 120,
-        mode_id: str = "agent",
-        cancelled: Callable[[], bool] | None = None,
-    ) -> str:
-        _raise_if_cancelled(cancelled)
-        executable = _find_executable(self)
-        result = _run_cli(
-            self,
-            [
-                executable,
-                "run",
-                "--format",
-                "json",
-                _prompt_with_instructions(instructions, message),
-            ],
-            timeout_seconds,
-        )
-
-        if result.returncode != 0:
-            detail = (
-                _parse_opencode_error(result.stdout)
-                or result.stderr.strip()
-                or result.stdout.strip()
-            )
-            _raise_cli_error(self, result.returncode, detail)
-
-        response = _parse_opencode_response(result.stdout)
-        return _require_response(self, response)
-
-
-class AntigravityResponseProvider:
-    id = "antigravity"
-    label = "Antigravity"
-    command = "agy"
-
-    def is_available(self) -> bool:
-        return shutil.which(self.command) is not None
-
-    def respond(
-        self,
-        message: str,
-        instructions: str,
-        timeout_seconds: int = 120,
-        mode_id: str = "agent",
-        cancelled: Callable[[], bool] | None = None,
-    ) -> str:
-        _raise_if_cancelled(cancelled)
-        executable = _find_executable(self)
-        result = _run_cli(
-            self,
-            [executable, "-p", _prompt_with_instructions(instructions, message)],
-            timeout_seconds,
-        )
-
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            _raise_cli_error(self, result.returncode, detail)
-
-        return _require_response(self, result.stdout.strip())
-
-
 RESPONSE_PROVIDERS: dict[str, ResponseProvider] = {
     provider.id: provider
     for provider in (
-        OpenCodeResponseProvider(),
-        AntigravityResponseProvider(),
         LFMTranscriptionResponseProvider(),
         PassthroughResponseProvider(),
     )
@@ -385,57 +304,6 @@ def close_response_providers() -> None:
             close()
 
 
-def _find_executable(
-    provider: OpenCodeResponseProvider | AntigravityResponseProvider,
-) -> str:
-    executable = shutil.which(provider.command)
-    if executable is None:
-        raise RuntimeError(f"{provider.id} CLI is not installed.")
-    return executable
-
-
-def _run_cli(
-    provider: ResponseProvider,
-    command: list[str],
-    timeout_seconds: int,
-) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            encoding="utf-8",
-            errors="replace",
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as error:
-        raise RuntimeError(f"{provider.id} CLI could not be started.") from error
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(
-            f"{provider.id} did not respond within {timeout_seconds} seconds."
-        ) from error
-
-
-def _raise_cli_error(
-    provider: ResponseProvider,
-    returncode: int,
-    detail: str,
-) -> None:
-    if detail:
-        raise RuntimeError(f"{provider.id} failed: {detail[-500:]}")
-    raise RuntimeError(f"{provider.id} failed with exit code {returncode}.")
-
-
-def _require_response(
-    provider: ResponseProvider,
-    response: str,
-) -> str:
-    if not response:
-        raise RuntimeError(f"{provider.id} returned an empty response.")
-    return response
-
-
 def _raise_if_cancelled(
     cancelled: Callable[[], bool] | None,
     cleanup: Callable[[], None] | None = None,
@@ -444,13 +312,6 @@ def _raise_if_cancelled(
         if cleanup is not None:
             cleanup()
         raise ResponseCancelled("Response processing was cancelled.")
-
-
-def _prompt_with_instructions(instructions: str, message: str) -> str:
-    return (
-        f"[Resonance instructions]\n{instructions.strip()}\n\n"
-        f"[User message]\n{message.strip()}"
-    )
 
 
 def _parse_completion_response(result: object) -> str:
@@ -467,43 +328,3 @@ def _parse_completion_response(result: object) -> str:
 
     text = choice.get("text")
     return text if isinstance(text, str) else ""
-
-
-def _parse_opencode_response(output: str) -> str:
-    text_parts = []
-    for line in output.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        if event.get("type") != "text":
-            continue
-        part = event.get("part")
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            text = part["text"].strip()
-            if text:
-                text_parts.append(text)
-
-    return text_parts[-1] if text_parts else ""
-
-
-def _parse_opencode_error(output: str) -> str:
-    for line in output.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        if event.get("type") != "error":
-            continue
-        error = event.get("error")
-        if not isinstance(error, dict):
-            continue
-        data = error.get("data")
-        if isinstance(data, dict) and isinstance(data.get("message"), str):
-            return data["message"].strip()
-        if isinstance(error.get("message"), str):
-            return error["message"].strip()
-
-    return ""

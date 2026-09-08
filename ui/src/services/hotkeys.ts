@@ -132,10 +132,6 @@ const CODE_TO_KEY = Object.fromEntries(
   (Object.entries(KEY_CODES) as [HotkeyKey, string][]).map(([key, code]) => [code, key])
 ) as Record<string, HotkeyKey>;
 
-export function eventCodeForHotkeyKey(key: HotkeyKey): string {
-  return KEY_CODES[key];
-}
-
 export function hotkeyKeyFromEventCode(code: string): HotkeyKey | undefined {
   return CODE_TO_KEY[code];
 }
@@ -153,53 +149,6 @@ export function modifierFromDomKey(key: string): HotkeyModifier | undefined {
     default:
       return undefined;
   }
-}
-
-export function modifierDomKeyName(modifier: HotkeyModifier): string {
-  switch (modifier) {
-    case 'ctrl':
-      return 'Control';
-    case 'alt':
-      return 'Alt';
-    case 'shift':
-      return 'Shift';
-    case 'meta':
-      return 'Meta';
-  }
-}
-
-export function domModifiersFromEvent(
-  event: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean }
-): HotkeyModifier[] {
-  const modifiers: HotkeyModifier[] = [];
-  if (event.ctrlKey) modifiers.push('ctrl');
-  if (event.altKey) modifiers.push('alt');
-  if (event.shiftKey) modifiers.push('shift');
-  if (event.metaKey) modifiers.push('meta');
-  return modifiers;
-}
-
-export function eventMatchesCombo(
-  event: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; code: string },
-  combo: HotkeyCombo
-): boolean {
-  const current = domModifiersFromEvent(event);
-  if (
-    current.length !== combo.modifiers.length ||
-    !combo.modifiers.every(modifier => current.includes(modifier))
-  ) {
-    return false;
-  }
-  if (combo.key === undefined) return true;
-  return KEY_CODES[combo.key] === event.code;
-}
-
-export function eventIsComboMemberKeyUp(
-  event: { key: string; code: string },
-  combo: HotkeyCombo
-): boolean {
-  if (combo.key !== undefined) return KEY_CODES[combo.key] === event.code;
-  return combo.modifiers.some(modifier => modifierDomKeyName(modifier) === event.key);
 }
 
 export function describeCombo(combo: HotkeyCombo): string {

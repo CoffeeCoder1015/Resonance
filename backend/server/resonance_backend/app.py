@@ -14,10 +14,7 @@ from resonance_backend.asr_providers import (
 )
 from resonance_backend.asr import ASRCancelled
 from resonance_backend.modes import MODES, get_mode
-from resonance_backend.provider_ids import (
-    AGENT_PROVIDER_IDS,
-    TRANSCRIPTION_PROVIDER_IDS,
-)
+from resonance_backend.provider_ids import TRANSCRIPTION_PROVIDER_IDS
 from resonance_backend.response_providers import (
     RESPONSE_PROVIDERS,
     ResponseCancelled,
@@ -28,11 +25,9 @@ from resonance_backend.response_providers import (
 )
 from resonance_backend.settings import (
     load_asr_provider,
-    load_agent_provider,
     load_settings,
     load_transcription_provider,
     save_asr_provider,
-    save_agent_provider,
     save_transcription_provider,
 )
 from resonance_backend.windows_insertion import (
@@ -109,11 +104,6 @@ class ResponseProviderSelection(BaseModel):
 
 class ASRProviderSelection(BaseModel):
     provider: str
-
-
-class TextPipelineRequest(BaseModel):
-    text: str
-    mode: Literal["agent", "transcription"]
 
 
 class WindowsInsertionRequest(BaseModel):
@@ -207,7 +197,7 @@ def transcribe(
 def process_text(
     transcript: str,
     response_provider: str,
-    mode_id: str,
+    mode_id: str = "transcription",
     cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     _raise_if_cancelled(cancelled)
@@ -219,15 +209,12 @@ def process_text(
             status_code=500,
             detail="The saved response provider is not supported.",
         )
-    if mode_id not in MODES:
+    if mode_id != "transcription" or mode_id not in MODES:
         raise HTTPException(
             status_code=422,
             detail="The requested pipeline mode is not supported.",
         )
-    allowed_provider_ids = (
-        AGENT_PROVIDER_IDS if mode_id == "agent" else TRANSCRIPTION_PROVIDER_IDS
-    )
-    if response_provider not in allowed_provider_ids:
+    if response_provider not in TRANSCRIPTION_PROVIDER_IDS:
         raise HTTPException(
             status_code=500,
             detail=f"The saved {mode_id} provider is not valid for this pipeline.",
@@ -245,11 +232,6 @@ def process_text(
     except (ASRCancelled, ResponseCancelled) as error:
         raise HTTPException(status_code=409, detail="Transcription was cancelled.") from error
     except Exception as error:
-        if mode_id != "transcription":
-            raise HTTPException(
-                status_code=502,
-                detail=f"Response processing failed: {error}",
-            ) from error
         return {
             "transcript": transcript,
             "text": transcript,
@@ -275,12 +257,12 @@ def process_text(
 @app.post("/v1/voice/process")
 def process_voice(
     file: Annotated[UploadFile, File()],
-    mode: Literal["agent", "transcription"],
+    mode: Literal["transcription"],
     job_id: Annotated[str | None, Header(alias="X-Resonance-Job-Id")] = None,
 ) -> dict[str, object]:
     settings = load_settings()
-    response_provider = settings[f"{mode}_provider"]
-    if mode != "transcription" or job_id is None:
+    response_provider = settings["transcription_provider"]
+    if job_id is None:
         transcript = transcribe(file)
         return process_text(transcript, response_provider, mode)
     if not job_id.strip() or len(job_id) > 128:
@@ -316,16 +298,6 @@ def create_audio_transcription(
     return {"transcript": transcribe(file)}
 
 
-@app.post("/v1/text/process")
-def process_text_request(request: TextPipelineRequest) -> dict[str, object]:
-    settings = load_settings()
-    return process_text(
-        request.text.strip(),
-        settings[f"{request.mode}_provider"],
-        request.mode,
-    )
-
-
 def _raise_if_cancelled(cancelled: Callable[[], bool] | None) -> None:
     if cancelled is not None and cancelled():
         raise ASRCancelled("Transcription was cancelled.")
@@ -353,30 +325,6 @@ def insert_windows_text(request: WindowsInsertionRequest) -> dict[str, object]:
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return result.to_dict()
-
-
-@app.get("/v1/agent/providers")
-def get_agent_providers() -> dict[str, object]:
-    return {
-        "current": load_agent_provider(),
-        "providers": list_response_providers(AGENT_PROVIDER_IDS),
-    }
-
-
-@app.put("/v1/agent/providers/current")
-def set_agent_provider(
-    selection: ResponseProviderSelection,
-) -> dict[str, str]:
-    if selection.provider not in AGENT_PROVIDER_IDS:
-        raise HTTPException(status_code=422, detail="Unknown agent provider.")
-    if not is_response_provider_available(selection.provider):
-        raise HTTPException(
-            status_code=409,
-            detail=f"{selection.provider} is unavailable.",
-        )
-
-    save_agent_provider(selection.provider)
-    return {"provider": selection.provider}
 
 
 @app.get("/v1/transcription/providers")

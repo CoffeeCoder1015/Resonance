@@ -29,8 +29,7 @@ import {
   type ProcessTranscriptionResult,
   type RuntimeCommand,
   type RuntimeSnapshot,
-  type UpdateHotkeysResult,
-  type VoiceInputOwner
+  type UpdateHotkeysResult
 } from './contract.js';
 import { installAppProtocol } from './protocol.js';
 import {
@@ -48,7 +47,6 @@ import {
   pasteTextViaClipboard,
   type ForegroundTarget
 } from './windows-text-insertion.js';
-import { VoiceInputOwnership } from './voice-input-ownership.js';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -82,7 +80,6 @@ let pillRequested = true;
 let rendererWindowsClosing = false;
 let expandedWindowLoad: Promise<BrowserWindow> | null = null;
 let pillWindowLoad: Promise<BrowserWindow> | null = null;
-const voiceInputOwnership = new VoiceInputOwnership();
 const insertionTargets = new Map<string, StoredInsertionTarget>();
 let activeTranscription: {
   id: string;
@@ -101,7 +98,6 @@ const PILL_POSITION_SAVE_DEBOUNCE_MS = 250;
 const HOVER_POLL_NEAR_MS = 50;
 const HOVER_POLL_MID_MS = 125;
 const HOVER_POLL_FAR_MS = 400;
-const VOICE_INPUT_REVOCATION_TIMEOUT_MS = 5_000;
 const MAX_TRANSCRIPTION_AUDIO_BYTES = 25 * 1024 * 1024;
 
 function cancelActiveTranscription(sessionId?: string) {
@@ -470,7 +466,7 @@ function describeCombo(combo: HotkeyCombo) {
   return combo.key === undefined ? modifiers : `${modifiers}+${combo.key.toUpperCase()}`;
 }
 
-function normalizeCombo(value: unknown, allowNoModifier: boolean): HotkeyCombo | null {
+function normalizeCombo(value: unknown): HotkeyCombo | null {
   if (!value || typeof value !== 'object') return null;
   const combo = value as Partial<HotkeyCombo>;
   if (!Array.isArray(combo.modifiers)) return null;
@@ -495,23 +491,16 @@ function normalizeCombo(value: unknown, allowNoModifier: boolean): HotkeyCombo |
     key = combo.key as HotkeyKey;
   }
 
-  if (modifiers.length === 0 && key === undefined) return null;
-  if (!allowNoModifier && modifiers.length === 0) return null;
+  if (modifiers.length === 0) return null;
   return { modifiers, key };
-}
-
-function combosEqual(a: HotkeyCombo, b: HotkeyCombo) {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function normalizeHotkeys(value: unknown): HotkeySettings | null {
   if (!value || typeof value !== 'object') return null;
   const settings = value as Partial<HotkeySettings>;
-  const globalHoldToTalk = normalizeCombo(settings.globalHoldToTalk, false);
-  const inWindowHoldToTalk = normalizeCombo(settings.inWindowHoldToTalk, true);
-  if (!globalHoldToTalk || !inWindowHoldToTalk) return null;
-  if (combosEqual(globalHoldToTalk, inWindowHoldToTalk)) return null;
-  return { globalHoldToTalk, inWindowHoldToTalk };
+  const globalHoldToTalk = normalizeCombo(settings.globalHoldToTalk);
+  if (!globalHoldToTalk) return null;
+  return { globalHoldToTalk };
 }
 
 function loadHotkeys(): HotkeySettings {
@@ -538,8 +527,8 @@ function comboIsHeld(combo: HotkeyCombo) {
 }
 
 function applyHotkeys(settings: HotkeySettings) {
-  hotkeys = settings;
   saveHotkeys(settings);
+  hotkeys = settings;
   pressedHotkeyKeycodes.clear();
   if (globalHotkeyActive) {
     globalHotkeyActive = false;
@@ -679,7 +668,7 @@ async function createTray() {
   tray.setToolTip('Resonance');
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open Resonance', click: showExpanded },
+      { label: 'Open settings', click: showExpanded },
       {
         label: 'Show transcription pill',
         click: () => void showPill()
@@ -700,62 +689,6 @@ async function createTray() {
 
 function installIpc() {
   ipcMain.handle(CHANNELS.getSnapshot, () => snapshot);
-  const ownerForSender = (sender: Electron.WebContents): VoiceInputOwner | null => {
-    if (sender === expandedWindow?.webContents) return 'desktop';
-    if (sender === pillWindow?.webContents) return 'pill';
-    return null;
-  };
-  const windowForOwner = (owner: VoiceInputOwner) =>
-    owner === 'desktop' ? expandedWindow : pillWindow;
-  const pendingRevocations = new Map<
-    string,
-    {
-      sender: Electron.WebContents;
-      finish: (stopped: boolean) => void;
-    }
-  >();
-  const revokeVoiceInput = (owner: VoiceInputOwner): Promise<boolean> => {
-    const previousWindow = windowForOwner(owner);
-    if (!windowIsUsable(previousWindow) || previousWindow.webContents.isDestroyed()) {
-      return Promise.resolve(true);
-    }
-
-    const sender = previousWindow.webContents;
-    const requestId = randomUUID();
-    return new Promise(resolve => {
-      let settled = false;
-      const finish = (stopped: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        sender.removeListener('destroyed', handleDestroyed);
-        pendingRevocations.delete(requestId);
-        resolve(stopped);
-      };
-      const handleDestroyed = () => finish(true);
-      const timeout = setTimeout(
-        () => finish(false),
-        VOICE_INPUT_REVOCATION_TIMEOUT_MS
-      );
-      pendingRevocations.set(requestId, { sender, finish });
-      sender.once('destroyed', handleDestroyed);
-      sender.send(CHANNELS.voiceInputRevoked, requestId);
-    });
-  };
-  ipcMain.on(CHANNELS.voiceInputRevokedAck, (event, requestId: unknown) => {
-    if (typeof requestId !== 'string') return;
-    const pending = pendingRevocations.get(requestId);
-    if (pending?.sender === event.sender) pending.finish(true);
-  });
-  ipcMain.handle(CHANNELS.claimVoiceInput, async (event, requestedOwner: unknown) => {
-    const owner = ownerForSender(event.sender);
-    if (!owner || requestedOwner !== owner) return false;
-    return voiceInputOwnership.claim(owner, revokeVoiceInput);
-  });
-  ipcMain.on(CHANNELS.releaseVoiceInput, (event, requestedOwner: unknown) => {
-    const owner = ownerForSender(event.sender);
-    if (owner && requestedOwner === owner) voiceInputOwnership.release(owner);
-  });
   ipcMain.handle(CHANNELS.getWindowFocus, event => {
     const expanded = expandedWindow;
     return Boolean(
@@ -903,7 +836,11 @@ function installIpc() {
   );
   ipcMain.on(CHANNELS.publishSnapshot, (event, nextSnapshot: RuntimeSnapshot) => {
     if (event.sender !== expandedWindow?.webContents) return;
-    snapshot = nextSnapshot;
+    if (!nextSnapshot || ![
+      'clay-blob', 'toy-collider', 'memphis-bloom', 'comic-burst',
+      'superflat-bloom', 'voxel-pulse'
+    ].includes(nextSnapshot.visualTheme)) return;
+    snapshot = { visualTheme: nextSnapshot.visualTheme };
     pillWindow?.webContents.send(CHANNELS.snapshot, snapshot);
   });
   ipcMain.handle(CHANNELS.getHotkeys, () => hotkeys);
@@ -911,18 +848,25 @@ function installIpc() {
     if (_event.sender !== expandedWindow?.webContents) {
       return {
         status: 'failed',
-        reason: 'Shortcuts may only be changed by the expanded Resonance window.'
+        reason: 'Shortcuts may only be changed from Resonance settings.'
       } satisfies UpdateHotkeysResult;
     }
     const next = normalizeHotkeys(value);
     if (!next) {
       return {
         status: 'failed',
-        reason: 'That shortcut is not valid. Use at least one modifier for the global hotkey, and pick a shortcut that differs from the other.'
+        reason: 'That shortcut is not valid. Use at least one modifier for the global hotkey.'
       } satisfies UpdateHotkeysResult;
     }
-    applyHotkeys(next);
-    return { status: 'ok', settings: hotkeys } satisfies UpdateHotkeysResult;
+    try {
+      applyHotkeys(next);
+      return { status: 'ok', settings: hotkeys } satisfies UpdateHotkeysResult;
+    } catch (error) {
+      return {
+        status: 'failed',
+        reason: error instanceof Error ? error.message : 'The shortcut could not be saved.'
+      } satisfies UpdateHotkeysResult;
+    }
   });
   ipcMain.on(CHANNELS.pillStatus, (event, nextStatus: unknown) => {
     if (event.sender !== pillWindow?.webContents) return;
@@ -963,7 +907,6 @@ function suspendExpandedToTray() {
     if (windowIsUsable(expanded)) expanded.destroy();
     console.info('[lifecycle] Suspended expanded renderer to tray.');
   } finally {
-    voiceInputOwnership.release('desktop');
     rendererWindowsClosing = false;
   }
 }
@@ -972,6 +915,7 @@ function destroyPillRenderer() {
   pillRequested = false;
   if (rendererWindowsClosing || !windowIsUsable(pillWindow)) return;
   rendererWindowsClosing = true;
+  cancelActiveTranscription();
   insertionTargets.clear();
   stopPillHoverTracking();
   uninstallGlobalHotkey();
@@ -987,7 +931,6 @@ function destroyPillRenderer() {
     pill.destroy();
     console.info('[lifecycle] Destroyed transcription pill renderer.');
   } finally {
-    voiceInputOwnership.release('pill');
     rendererWindowsClosing = false;
   }
 }
@@ -1014,7 +957,6 @@ async function ensureExpandedWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     if (expandedWindow === window) {
       expandedWindow = null;
-      voiceInputOwnership.release('desktop');
     }
   });
   expandedWindowLoad = window
@@ -1049,7 +991,7 @@ async function ensurePillWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     if (pillWindow === window) {
       pillWindow = null;
-      voiceInputOwnership.release('pill');
+      cancelActiveTranscription();
     }
   });
   window.on('moved', () => {
@@ -1129,14 +1071,14 @@ function installPermissionPolicy() {
   session.defaultSession.setPermissionCheckHandler(
     (webContents, permission, requestingOrigin) => {
       const origin = requestingOrigin || webContents?.getURL() || '';
-      const allowed = permission === 'media' && isTrustedOrigin(origin);
+      const allowed = permission === 'media' && webContents === pillWindow?.webContents && isTrustedOrigin(origin);
       return allowed;
     }
   );
   session.defaultSession.setPermissionRequestHandler(
     (webContents, permission, callback) => {
       const origin = webContents.getURL();
-      const allowed = permission === 'media' && isTrustedOrigin(origin);
+      const allowed = permission === 'media' && webContents === pillWindow?.webContents && isTrustedOrigin(origin);
       callback(allowed);
     }
   );

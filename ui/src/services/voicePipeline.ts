@@ -1,8 +1,3 @@
-import {
-  processVoice,
-  type PipelineMode,
-  type PipelineResult
-} from './backend';
 import { MicrophoneCapture } from './microphoneCapture';
 
 type CaptureStartOptions = Parameters<MicrophoneCapture['start']>[0];
@@ -83,15 +78,6 @@ export class VoicePipeline {
     return true;
   }
 
-  process(
-    audio: Blob,
-    mode: PipelineMode,
-    signal?: AbortSignal
-  ): Promise<PipelineResult> {
-    this.assertActive();
-    return processVoice(audio, mode, signal);
-  }
-
   async discardAndPause(capture = this.captureValue) {
     if (!capture || !this.owns(capture)) return;
     await capture.discardAndPause();
@@ -99,15 +85,6 @@ export class VoicePipeline {
 
   cancelPendingCapture() {
     this.openingAbort?.abort();
-  }
-
-  async pauseForHandoff() {
-    this.openingAbort?.abort();
-    const opening = this.opening;
-    if (opening) await opening.catch(() => undefined);
-
-    const capture = this.captureValue;
-    if (capture) await capture.discardAndPause();
   }
 
   async disposeCapture(capture: MicrophoneCapture) {

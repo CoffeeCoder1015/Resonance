@@ -53,7 +53,6 @@ export function voicePhaseToPillStatus(phase: VoicePhase): PillStatus {
     case 'responding':
       return 'processing';
     case 'idle':
-    case 'speaking':
       return 'idle';
   }
 }

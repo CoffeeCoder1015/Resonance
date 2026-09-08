@@ -24,14 +24,19 @@ test('sends a job ID with the transcription request', async () => {
   }) as typeof fetch;
 
   try {
+    const controller = new AbortController();
+    const audio = new Uint8Array([1, 2, 3, 4]);
     const result = await processTranscription(
-      new ArrayBuffer(4),
+      audio.buffer,
       'audio/wav',
       'job-123',
-      new AbortController().signal
+      controller.signal
     );
 
     assert.equal(result.text, 'Final text');
+    const upload = (requestedOptions?.body as FormData).get('file') as File;
+    assert.equal(upload.type, 'audio/wav');
+    assert.deepEqual(new Uint8Array(await upload.arrayBuffer()), audio);
     assert.equal(
       requestedUrl,
       'http://127.0.0.1:8000/v1/voice/process?mode=transcription'
@@ -39,6 +44,40 @@ test('sends a job ID with the transcription request', async () => {
     assert.equal(
       new Headers(requestedOptions?.headers).get('X-Resonance-Job-Id'),
       'job-123'
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('propagates backend failures without returning insertable text', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ detail: 'Transcription was cancelled.' }),
+    { status: 409 }
+  )) as typeof fetch;
+  try {
+    await assert.rejects(
+      processTranscription(new ArrayBuffer(4), 'audio/wav', 'cancelled-job', new AbortController().signal),
+      /Transcription was cancelled/
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('caller cancellation aborts an in-flight upload', async () => {
+  const previousFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const reason = new Error('User cancelled dictation');
+  globalThis.fetch = ((_input, options) => new Promise((_resolve, reject) => {
+    options!.signal!.addEventListener('abort', () => reject(options!.signal!.reason), { once: true });
+    controller.abort(reason);
+  })) as typeof fetch;
+  try {
+    await assert.rejects(
+      processTranscription(new ArrayBuffer(4), 'audio/wav', 'active-job', controller.signal),
+      error => error === reason
     );
   } finally {
     globalThis.fetch = previousFetch;

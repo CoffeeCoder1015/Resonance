@@ -3,7 +3,7 @@ import type { PillStatus } from '../components/transcription-pill/pillPresentati
 import { useAudioVisualization } from '../hooks/useAudioVisualization';
 import { MicrophoneCapture } from '../services/microphoneCapture';
 import { VoicePipeline } from '../services/voicePipeline';
-import { voicePhaseToAgentState } from '../services/voiceState';
+import { voicePhaseToVoiceState } from '../services/voiceState';
 import type { VoiceInputMode, VoicePhase } from '../types/voice';
 
 function errorMessage(error: unknown, fallback: string) {
@@ -33,13 +33,6 @@ export function useTranscriptionPillRuntime() {
   const holdRequestedRef = useRef(false);
   const errorTimerRef = useRef<number | null>(null);
 
-  const claimVoiceInput = useCallback(async () => {
-    const bridge = window.resonanceDesktop;
-    return bridge ? bridge.claimVoiceInput('pill') : true;
-  }, []);
-  const releaseVoiceInput = useCallback(() => {
-    window.resonanceDesktop?.releaseVoiceInput('pill');
-  }, []);
   const cancelInsertionTarget = useCallback((target: InsertionTargetPromise | null) => {
     if (!target) return;
     void target.then(result => {
@@ -54,7 +47,7 @@ export function useTranscriptionPillRuntime() {
     setPhaseValue(nextPhase);
   }, []);
 
-  const state = voicePhaseToAgentState(phase);
+  const state = voicePhaseToVoiceState(phase);
   const { currentSpeechVolume, audioFrequencies } = useAudioVisualization(
     state,
     pipeline.analyser
@@ -110,7 +103,7 @@ export function useTranscriptionPillRuntime() {
       setStatus('processing');
       try {
         const audio = await pipeline.finish(capture);
-        releaseVoiceInput();
+
         if (generation !== generationRef.current) return;
         activeInputModeRef.current = null;
         if (!audio) {
@@ -165,7 +158,6 @@ export function useTranscriptionPillRuntime() {
         showError(error);
         setPhase('idle');
       } finally {
-        releaseVoiceInput();
         cancelInsertionTarget(insertionTarget);
         if (insertionTargetRef.current === insertionTarget) {
           insertionTargetRef.current = null;
@@ -173,7 +165,7 @@ export function useTranscriptionPillRuntime() {
         if (finishingRef.current === capture) finishingRef.current = null;
       }
     },
-    [cancelInsertionTarget, pipeline, releaseVoiceInput, setPhase, showError]
+    [cancelInsertionTarget, pipeline, setPhase, showError]
   );
 
   const start = useCallback(
@@ -189,13 +181,8 @@ export function useTranscriptionPillRuntime() {
           showError(new Error('Desktop integration is unavailable.'));
           return;
         }
-        if (!(await claimVoiceInput())) {
-          activeInputModeRef.current = null;
-          return;
-        }
         if (generation !== generationRef.current) {
           activeInputModeRef.current = null;
-          releaseVoiceInput();
           return;
         }
 
@@ -224,8 +211,10 @@ export function useTranscriptionPillRuntime() {
             }
           });
         } catch (error) {
+          cancelInsertionTarget(insertionTarget);
+          if (insertionTargetRef.current === insertionTarget) insertionTargetRef.current = null;
           activeInputModeRef.current = null;
-          releaseVoiceInput();
+
           if (generation !== generationRef.current) return;
           showError(error);
           setPhase('idle');
@@ -236,7 +225,6 @@ export function useTranscriptionPillRuntime() {
 
         if (generation !== generationRef.current || !pipeline.owns(capture)) {
           await pipeline.discardAndPause(capture);
-          releaseVoiceInput();
           return;
         }
 
@@ -253,11 +241,10 @@ export function useTranscriptionPillRuntime() {
       }
     },
     [
-      claimVoiceInput,
+      cancelInsertionTarget,
       finishAndTranscribe,
       pipeline,
       prepare,
-      releaseVoiceInput,
       setPhase,
       showError
     ]
@@ -319,30 +306,15 @@ export function useTranscriptionPillRuntime() {
     });
   }, [pipeline]);
 
-  useEffect(() => {
-    const bridge = window.resonanceDesktop;
-    if (!bridge) return;
-    return bridge.subscribeVoiceInputRevoked(async () => {
-      generationRef.current += 1;
-      cancelInsertionTarget(insertionTargetRef.current);
-      insertionTargetRef.current = null;
-      activeInputModeRef.current = null;
-      holdReleasePendingRef.current = false;
-      setStatus('idle');
-      setPhase('idle');
-      await pipeline.pauseForHandoff();
-    });
-  }, [cancelInsertionTarget, pipeline, setPhase]);
-
   useEffect(
     () => () => {
       generationRef.current += 1;
       cancelInsertionTarget(insertionTargetRef.current);
-      releaseVoiceInput();
+
       if (errorTimerRef.current !== null) window.clearTimeout(errorTimerRef.current);
       void pipeline.dispose();
     },
-    [cancelInsertionTarget, pipeline, releaseVoiceInput]
+    [cancelInsertionTarget, pipeline]
   );
 
   return {

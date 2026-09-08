@@ -1,10 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   getASRProviderSettings,
-  getAgentProviderSettings,
   getTranscriptionProviderSettings,
   selectASRProvider,
-  selectAgentProvider,
   selectTranscriptionProvider,
   type ASRProviderOption,
   type ResponseProviderOption
@@ -13,13 +11,11 @@ import type { HotkeySettings, UpdateHotkeysResult } from '../types/desktop';
 import { HotkeySettingsPanel } from './HotkeySettingsPanel';
 
 interface ProviderSettingsPanelProps {
-  section: 'transcription' | 'agent';
   hotkeys: HotkeySettings | null;
   onUpdateHotkeys: (settings: HotkeySettings) => Promise<UpdateHotkeysResult>;
 }
 
 export function ProviderSettingsPanel({
-  section,
   hotkeys,
   onUpdateHotkeys
 }: ProviderSettingsPanelProps) {
@@ -36,20 +32,14 @@ export function ProviderSettingsPanel({
   useEffect(() => {
     const abortController = new AbortController();
     void Promise.all([
-      section === 'agent'
-        ? getAgentProviderSettings(abortController.signal)
-        : getTranscriptionProviderSettings(abortController.signal),
-      section === 'transcription'
-        ? getASRProviderSettings(abortController.signal)
-        : Promise.resolve(null)
+      getTranscriptionProviderSettings(abortController.signal),
+      getASRProviderSettings(abortController.signal)
     ])
       .then(([responseProviderSettings, asrSettings]) => {
         setResponseProviderOptions(responseProviderSettings.providers);
         setSelectedResponseProvider(responseProviderSettings.current);
-        if (asrSettings) {
-          setASRProviderOptions(asrSettings.providers);
-          setSelectedASRProvider(asrSettings.current);
-        }
+        setASRProviderOptions(asrSettings.providers);
+        setSelectedASRProvider(asrSettings.current);
       })
       .catch(error => {
         if (!abortController.signal.aborted) {
@@ -61,16 +51,14 @@ export function ProviderSettingsPanel({
       });
 
     return () => abortController.abort();
-  }, [section]);
+  }, []);
 
   const handleResponseProviderChange = async (responseProvider: string) => {
     setSaving(true);
     setErrorMessage(null);
     try {
       setSelectedResponseProvider(
-        await (section === 'agent'
-          ? selectAgentProvider(responseProvider)
-          : selectTranscriptionProvider(responseProvider))
+        await selectTranscriptionProvider(responseProvider)
       );
     } catch (error) {
       setErrorMessage(
@@ -96,30 +84,26 @@ export function ProviderSettingsPanel({
   return (
     <div
       id="provider-settings-panel"
-      role="tabpanel"
-      aria-labelledby={`${section}-settings-tab`}
       className="min-w-0 overflow-y-auto no-scrollbar p-4 sm:p-5"
     >
       <div className="mb-5">
         <p className="font-mono text-[9px] font-black uppercase tracking-[0.16em] text-black/45">
-          {section === 'transcription' ? 'Speech pipeline' : 'Agent pipeline'}
+          Speech pipeline
         </p>
-        <h3 className="text-lg font-black tracking-tight sm:text-xl">
-          {section === 'transcription' ? 'Transcription' : 'Agent'}
-        </h3>
+        <h2 className="text-lg font-black tracking-tight sm:text-xl">
+          Transcription
+        </h2>
         <p className="mt-0.5 text-xs font-semibold text-black/55 sm:text-sm">
-          {section === 'transcription'
-            ? 'Choose how captured audio becomes text.'
-            : 'Choose how transcribed text is processed and answered.'}
+          Choose how captured audio becomes text.
         </p>
       </div>
 
       <div className="rounded-[1.5rem] border-[3px] border-black bg-[#e9d8fd] p-4 neo-shadow sm:p-5">
-        <label htmlFor={`${section}-provider`} className="mb-2 block text-sm font-black">
-          {section === 'agent' ? 'Response provider' : 'Transcription provider'}
+        <label htmlFor="transcription-provider" className="mb-2 block text-sm font-black">
+          Transcript cleanup
         </label>
         <select
-          id={`${section}-provider`}
+          id="transcription-provider"
           value={selectedResponseProvider}
           disabled={loading || saving || responseProviderOptions.length === 0}
           onChange={event => void handleResponseProviderChange(event.target.value)}
@@ -137,15 +121,11 @@ export function ProviderSettingsPanel({
             </option>
           ))}
         </select>
-        {section === 'transcription' && (
           <p className="mt-3 text-xs font-semibold leading-relaxed text-black/55">
             Refines recognized speech before it is inserted. Passthrough keeps the ASR text unchanged.
           </p>
-        )}
       </div>
 
-      {section === 'transcription' && (
-      <>
       <div className="mt-4 rounded-[1.5rem] border-[3px] border-black bg-[#fff2a8] p-4 neo-shadow sm:p-5">
         <label htmlFor="asr-provider" className="mb-2 block text-sm font-black">
           Speech recognition
@@ -173,8 +153,6 @@ export function ProviderSettingsPanel({
         </p>
       </div>
       <HotkeySettingsPanel hotkeys={hotkeys} onUpdateHotkeys={onUpdateHotkeys} />
-      </>
-      )}
 
       <div className="mt-4 flex items-center gap-2 text-xs font-bold" aria-live="polite">
         <span
@@ -197,11 +175,7 @@ export function ProviderSettingsPanel({
         </span>
       </div>
 
-      <p className="mt-4 text-xs font-semibold leading-relaxed text-black/55">
-        {section === 'transcription'
-          ? 'Local speech-model processes remain managed by the Resonance backend.'
-          : 'Response-provider authentication and local model processes remain managed outside the UI.'}
-      </p>
+
     </div>
   );
 }

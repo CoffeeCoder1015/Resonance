@@ -19,21 +19,6 @@ interface HotkeySettingsPanelProps {
   onUpdateHotkeys: (settings: HotkeySettings) => Promise<UpdateHotkeysResult>;
 }
 
-type CapturingTarget = 'global' | 'in-window';
-
-const rows = [
-  {
-    id: 'global' as const,
-    label: 'Global push-to-talk',
-    description: 'Works while Resonance is hidden in the tray.'
-  },
-  {
-    id: 'in-window' as const,
-    label: 'In-window hold-to-talk',
-    description: 'Works while the expanded Resonance window is focused.'
-  }
-];
-
 interface CaptureState {
   pressed: Set<string>;
   modifiers: ('ctrl' | 'alt' | 'shift' | 'meta')[];
@@ -48,27 +33,24 @@ export function HotkeySettingsPanel({
   hotkeys,
   onUpdateHotkeys
 }: HotkeySettingsPanelProps) {
-  const [capturingFor, setCapturingFor] = useState<CapturingTarget | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const captureRef = useRef<CaptureState>(freshCaptureState());
 
   useEffect(() => {
-    if (!capturingFor || !hotkeys) return;
+    if (!isCapturing || !hotkeys) return;
     captureRef.current = freshCaptureState();
     setCaptureError(null);
 
     const commit = (combo: HotkeyCombo) => {
       if (!hotkeys) return;
       setSaving(true);
-      const next: HotkeySettings =
-        capturingFor === 'global'
-          ? { ...hotkeys, globalHoldToTalk: combo }
-          : { ...hotkeys, inWindowHoldToTalk: combo };
+      const next: HotkeySettings = { globalHoldToTalk: combo };
       void onUpdateHotkeys(next)
         .then(result => {
           if (result.status === 'ok') {
-            setCapturingFor(null);
+            setIsCapturing(false);
             setCaptureError(null);
           } else {
             setCaptureError(result.reason);
@@ -89,7 +71,7 @@ export function HotkeySettingsPanel({
       event.stopPropagation();
       if (event.repeat) return;
       if (event.key === 'Escape') {
-        setCapturingFor(null);
+        setIsCapturing(false);
         setCaptureError(null);
         return;
       }
@@ -130,11 +112,11 @@ export function HotkeySettingsPanel({
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [capturingFor, hotkeys, onUpdateHotkeys]);
+  }, [isCapturing, hotkeys, onUpdateHotkeys]);
 
   const cancelCapture = () => {
     captureRef.current = freshCaptureState();
-    setCapturingFor(null);
+    setIsCapturing(false);
     setCaptureError(null);
   };
 
@@ -143,8 +125,7 @@ export function HotkeySettingsPanel({
     setSaving(true);
     setCaptureError(null);
     void onUpdateHotkeys({
-      globalHoldToTalk: { modifiers: [...DEFAULT_HOTKEYS.globalHoldToTalk.modifiers] },
-      inWindowHoldToTalk: { ...DEFAULT_HOTKEYS.inWindowHoldToTalk }
+      globalHoldToTalk: { modifiers: [...DEFAULT_HOTKEYS.globalHoldToTalk.modifiers] }
     })
       .then(result => {
         if (result.status === 'failed') setCaptureError(result.reason);
@@ -157,6 +138,8 @@ export function HotkeySettingsPanel({
       .finally(() => setSaving(false));
   };
 
+  const combo = hotkeys?.globalHoldToTalk;
+
   return (
     <div className="mt-5 rounded-[1.5rem] border-[3px] border-black bg-[#d7f5ff] p-4 neo-shadow sm:p-5">
       <div className="flex items-start justify-between gap-3">
@@ -166,8 +149,8 @@ export function HotkeySettingsPanel({
           </span>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h4 className="text-sm font-black">Hold-to-talk shortcuts</h4>
-              {capturingFor && (
+              <h4 className="text-sm font-black">Hold-to-talk shortcut</h4>
+              {isCapturing && (
                 <span className="flex items-center gap-1.5 rounded-md border-2 border-black bg-[#ffde00] px-2 py-0.5 font-mono text-[8px] font-black uppercase tracking-wider">
                   <Loader2 className="h-3 w-3 animate-spin" stroke="3" />
                   {saving ? 'Saving...' : 'Press a shortcut'}
@@ -175,16 +158,16 @@ export function HotkeySettingsPanel({
               )}
             </div>
             <p className="mt-1 text-xs font-semibold text-black/55">
-              {capturingFor
+              {isCapturing
                 ? 'Press your new shortcut, or press Escape to cancel.'
-                : 'Rebind the push-to-talk controls. Settings are saved automatically.'}
+                : 'Hold this shortcut to dictate into the focused app.'}
             </p>
           </div>
         </div>
         <button
           type="button"
           onClick={restoreDefaults}
-          disabled={!hotkeys || capturingFor !== null || saving}
+          disabled={!hotkeys || isCapturing || saving}
           title="Restore the default shortcuts"
           className="flex shrink-0 items-center gap-1.5 rounded-lg border-2 border-black bg-white px-2.5 py-2 text-[10px] font-black neo-press disabled:opacity-45"
         >
@@ -203,21 +186,15 @@ export function HotkeySettingsPanel({
       )}
 
       <div className="mt-4 space-y-3">
-        {rows.map(row => {
-          const isCapturing = capturingFor === row.id;
-          const combo =
-            hotkeys?.[row.id === 'global' ? 'globalHoldToTalk' : 'inWindowHoldToTalk'];
-          return (
             <div
-              key={row.id}
               className={`flex flex-col gap-3 rounded-xl border-[3px] border-black p-3 sm:flex-row sm:items-center ${
                 isCapturing ? 'bg-[#ffde00]' : 'bg-white'
               }`}
             >
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-black">{row.label}</p>
+                <p className="text-xs font-black">Global push-to-talk</p>
                 <p className="mt-0.5 text-[11px] font-semibold text-black/50">
-                  {row.description}
+                  Works while Resonance is hidden in the tray.
                 </p>
               </div>
               <div
@@ -261,16 +238,14 @@ export function HotkeySettingsPanel({
               ) : (
                 <button
                   type="button"
-                  onClick={() => setCapturingFor(row.id)}
-                  disabled={!hotkeys || capturingFor !== null || saving}
+                  onClick={() => setIsCapturing(true)}
+                  disabled={!hotkeys || isCapturing || saving}
                   className="rounded-lg border-2 border-black bg-[#ffde00] px-3 py-2 text-xs font-black neo-press disabled:opacity-45"
                 >
                   Change
                 </button>
               )}
             </div>
-          );
-        })}
       </div>
     </div>
   );

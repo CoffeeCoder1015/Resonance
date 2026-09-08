@@ -51,28 +51,6 @@ export function createBackendClient({
       });
     },
 
-    processText({ text, mode, signal }) {
-      return request('/v1/text/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, mode }),
-        signal
-      });
-    },
-
-    getAgentProviders({ signal }) {
-      return request('/v1/agent/providers', { signal });
-    },
-
-    setAgentProvider({ provider, signal }) {
-      return request('/v1/agent/providers/current', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider }),
-        signal
-      });
-    },
-
     getTranscriptionProviders({ signal }) {
       return request('/v1/transcription/providers', { signal });
     },

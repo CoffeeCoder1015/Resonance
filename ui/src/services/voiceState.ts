@@ -1,14 +1,12 @@
-import type { AgentState, VoicePhase } from '../types/voice';
+import type { VoiceState, VoicePhase } from '../types/voice';
 
-export function voicePhaseToAgentState(phase: VoicePhase): AgentState {
+export function voicePhaseToVoiceState(phase: VoicePhase): VoiceState {
   switch (phase) {
     case 'listening':
       return 'listening';
     case 'transcribing':
     case 'responding':
       return 'processing';
-    case 'speaking':
-      return 'speaking';
     case 'acquiring-microphone':
     case 'idle':
       return 'idle';

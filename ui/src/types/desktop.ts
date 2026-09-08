@@ -9,11 +9,8 @@ export type DesktopRuntimeCommand =
   | 'toggle-transcription'
   | 'begin-transcription'
   | 'end-transcription'
-  | 'begin-hold-to-talk'
-  | 'end-hold-to-talk'
   | 'show-expanded';
 
-export type VoiceInputOwner = 'desktop' | 'pill';
 
 export type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 
@@ -49,7 +46,6 @@ export interface HotkeyCombo {
 
 export interface HotkeySettings {
   globalHoldToTalk: HotkeyCombo;
-  inWindowHoldToTalk: HotkeyCombo;
 }
 
 export type UpdateHotkeysResult =
@@ -57,8 +53,7 @@ export type UpdateHotkeysResult =
   | { status: 'failed'; reason: string };
 
 export const DEFAULT_HOTKEYS: HotkeySettings = {
-  globalHoldToTalk: { modifiers: ['ctrl', 'meta'] },
-  inWindowHoldToTalk: { modifiers: [], key: 'space' }
+  globalHoldToTalk: { modifiers: ['ctrl', 'meta'] }
 };
 
 export type BeginTextInsertionResult =
@@ -91,9 +86,6 @@ export interface ResonanceDesktopBridge {
   publishSnapshot(snapshot: DesktopRuntimeSnapshot): void;
   subscribeSnapshot(listener: (snapshot: DesktopRuntimeSnapshot) => void): () => void;
   publishPillStatus(status: PillStatus): void;
-  claimVoiceInput(owner: VoiceInputOwner): Promise<boolean>;
-  releaseVoiceInput(owner: VoiceInputOwner): void;
-  subscribeVoiceInputRevoked(listener: () => void | Promise<void>): () => void;
   sendCommand(command: DesktopRuntimeCommand): void;
   subscribeCommand(listener: (command: DesktopRuntimeCommand) => void): () => void;
   subscribePillHover(listener: (hovered: boolean) => void): () => void;

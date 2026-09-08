@@ -4,8 +4,6 @@ type RuntimeCommand =
   | 'toggle-transcription'
   | 'begin-transcription'
   | 'end-transcription'
-  | 'begin-hold-to-talk'
-  | 'end-hold-to-talk'
   | 'show-expanded';
 type RuntimeSnapshot = {
   visualTheme: string;
@@ -36,12 +34,10 @@ type HotkeyModifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 type HotkeyCombo = { modifiers: HotkeyModifier[]; key?: string };
 type HotkeySettings = {
   globalHoldToTalk: HotkeyCombo;
-  inWindowHoldToTalk: HotkeyCombo;
 };
 type UpdateHotkeysResult =
   | { status: 'ok'; settings: HotkeySettings }
   | { status: 'failed'; reason: string };
-type VoiceInputOwner = 'desktop' | 'pill';
 
 const CHANNELS = {
   getSnapshot: 'runtime:get-snapshot',
@@ -50,10 +46,6 @@ const CHANNELS = {
   command: 'runtime:command',
   pillHover: 'pill:hover',
   pillStatus: 'pill:status',
-  claimVoiceInput: 'voice-input:claim',
-  releaseVoiceInput: 'voice-input:release',
-  voiceInputRevoked: 'voice-input:revoked',
-  voiceInputRevokedAck: 'voice-input:revoked-ack',
   getWindowFocus: 'desktop:get-window-focus',
   windowFocus: 'desktop:window-focus',
   beginTextInsertion: 'insertion:begin',
@@ -78,22 +70,6 @@ contextBridge.exposeInMainWorld('resonanceDesktop', {
   },
   publishPillStatus: (status: PillStatus) => {
     ipcRenderer.send(CHANNELS.pillStatus, status);
-  },
-  claimVoiceInput: (owner: VoiceInputOwner) =>
-    ipcRenderer.invoke(CHANNELS.claimVoiceInput, owner) as Promise<boolean>,
-  releaseVoiceInput: (owner: VoiceInputOwner) => {
-    ipcRenderer.send(CHANNELS.releaseVoiceInput, owner);
-  },
-  subscribeVoiceInputRevoked: (listener: () => void | Promise<void>) => {
-    const handler = async (_event: Electron.IpcRendererEvent, requestId: string) => {
-      try {
-        await listener();
-      } finally {
-        ipcRenderer.send(CHANNELS.voiceInputRevokedAck, requestId);
-      }
-    };
-    ipcRenderer.on(CHANNELS.voiceInputRevoked, handler);
-    return () => ipcRenderer.removeListener(CHANNELS.voiceInputRevoked, handler);
   },
   sendCommand: (command: RuntimeCommand) => {
     ipcRenderer.send(CHANNELS.command, command);

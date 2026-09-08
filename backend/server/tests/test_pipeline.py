@@ -12,7 +12,6 @@ class PipelineTests(unittest.TestCase):
         app_module,
         "load_settings",
         return_value={
-            "agent_provider": "opencode",
             "transcription_provider": "passthrough",
             "asr_provider": "whisper",
         },
@@ -54,21 +53,10 @@ class PipelineTests(unittest.TestCase):
             },
         )
 
-    def test_agent_failure_is_an_http_failure(self) -> None:
-        provider = Mock()
-        provider.respond.side_effect = RuntimeError("agent unavailable")
-        with patch.object(app_module, "get_response_provider", return_value=provider):
-            with self.assertRaises(HTTPException) as context:
-                app_module.process_text("Question", "opencode", "agent")
-
-        self.assertEqual(context.exception.status_code, 502)
-        self.assertIn("agent unavailable", context.exception.detail)
-
     @patch.object(
         app_module,
         "load_settings",
         return_value={
-            "agent_provider": "opencode",
             "transcription_provider": "passthrough",
             "asr_provider": "whisper",
         },
@@ -87,36 +75,6 @@ class PipelineTests(unittest.TestCase):
 
         self.assertEqual(context.exception.status_code, 409)
         self.assertNotIn(job_id, app_module.transcription_jobs._jobs)
-
-    def test_provider_cannot_cross_pipeline_boundary(self) -> None:
-        with self.assertRaises(HTTPException) as context:
-            app_module.process_text("Question", "passthrough", "agent")
-
-        self.assertEqual(context.exception.status_code, 500)
-
-    @patch.object(
-        app_module,
-        "load_settings",
-        return_value={
-            "agent_provider": "antigravity",
-            "transcription_provider": "passthrough",
-            "asr_provider": "whisper",
-        },
-    )
-    @patch.object(app_module, "get_response_provider")
-    def test_text_request_uses_the_provider_for_its_mode(
-        self,
-        get_provider: Mock,
-        load_settings: Mock,
-    ) -> None:
-        get_provider.return_value.respond.return_value = "Agent response"
-        request = app_module.TextPipelineRequest(text="Typed text", mode="agent")
-
-        result = app_module.process_text_request(request)
-
-        self.assertEqual(result["text"], "Agent response")
-        get_provider.assert_called_once_with("antigravity")
-
 
 if __name__ == "__main__":
     unittest.main()
