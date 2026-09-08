@@ -157,6 +157,8 @@ export const TranscriptionPill = memo(function TranscriptionPill({
               // animation activity follows its visual expansion rather than
               // document focus.
               active={!isCompact}
+              powerPreference="default"
+              maxFrameRate={60}
             />
           </div>
         </div>

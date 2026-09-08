@@ -15,13 +15,18 @@ interface AvatarCanvasProps {
    * its WebGL resources.
    */
   active?: boolean;
+  /** Hint Chromium which GPU profile this surface warrants. */
+  powerPreference?: WebGLPowerPreference;
+  /** Optional render ceiling for small persistent surfaces. */
+  maxFrameRate?: number;
 }
 
 interface NBody {
-  mesh: THREE.Mesh;
+  index: number;
   pos: THREE.Vector3;
   vel: THREE.Vector3;
   mass: number;
+  size: number;
 }
 
 interface MemphisItem {
@@ -44,6 +49,11 @@ interface FlowerPetal {
   stretch: number;
 }
 
+interface ClayVertexData {
+  directions: Float32Array;
+  radii: Float32Array;
+}
+
 export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   state,
   visualTheme,
@@ -51,7 +61,9 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   frequencies,
   onAvatarClick,
   preview = false,
-  active = true
+  active = true,
+  powerPreference = 'high-performance',
+  maxFrameRate
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
@@ -63,10 +75,11 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
 
   // Seed 1: Ceramic Clay
   const clayMeshRef = useRef<THREE.Mesh | null>(null);
-  const clayOrigPositionsRef = useRef<Float32Array | null>(null);
+  const clayVertexDataRef = useRef<ClayVertexData | null>(null);
 
   // Seed 2: Candy Collider
   const nbodyGroupRef = useRef<THREE.Group | null>(null);
+  const nbodyMeshRef = useRef<THREE.InstancedMesh | null>(null);
   const nbodyPhysicsRef = useRef<NBody[]>([]);
 
   // Seed 3: Memphis Bloom
@@ -105,9 +118,8 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   const activeRef = useRef<boolean>(active);
   activeRef.current = active;
 
-  // This effect only starts or cancels an existing loop. Scene construction
-  // belongs to the mount effect below, so toggling activity never churns GPU
-  // resources or discards live audio/state refs.
+  // Activity only starts or cancels the existing loop. Theme changes rebuild
+  // the selected scene, while compact/expanded transitions keep it allocated.
   useEffect(() => {
     if (active) startAnimationRef.current();
     else stopAnimationRef.current();
@@ -116,6 +128,26 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
+
+    // Each canvas owns only its selected theme. This keeps hidden theme
+    // geometries and materials out of Chromium's renderer/GPU processes.
+    clayMeshRef.current = null;
+    clayVertexDataRef.current = null;
+    nbodyGroupRef.current = null;
+    nbodyMeshRef.current = null;
+    nbodyPhysicsRef.current = [];
+    memphisGroupRef.current = null;
+    memphisItemsRef.current = [];
+    memphisCoreRef.current = null;
+    comicBallRef.current = null;
+    comicBurstARef.current = null;
+    comicBurstBRef.current = null;
+    flowerRootRef.current = null;
+    flowerPetalsRef.current = [];
+    flowerFaceRef.current = null;
+    voxelMeshRef.current = null;
+    voxelGroupRef.current = null;
+    voxelDataRef.current = null;
 
     const width = mount.clientWidth || window.innerWidth;
     const height = mount.clientHeight || window.innerHeight;
@@ -126,7 +158,11 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     camera.position.z = preview ? 12 : 15;
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.LinearToneMapping;
@@ -166,7 +202,12 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     // =========================================================
     // SEED 1 — 3D BOUNCY CERAMIC CLAY BLOB
     // =========================================================
+    if (visualTheme === 'clay-blob') {
     const clayGeo = new THREE.SphereGeometry(2.35, 80, 80);
+    const clayPosition = clayGeo.getAttribute('position') as THREE.BufferAttribute;
+    const clayNormal = clayGeo.getAttribute('normal') as THREE.BufferAttribute;
+    clayPosition.setUsage(THREE.DynamicDrawUsage);
+    clayNormal.setUsage(THREE.DynamicDrawUsage);
     const clayMesh = new THREE.Mesh(
       clayGeo,
       new THREE.MeshPhysicalMaterial({
@@ -182,28 +223,47 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     clayMesh.scale.setScalar(0.86);
     scene.add(clayMesh);
     clayMeshRef.current = clayMesh;
-    clayOrigPositionsRef.current = clayGeo.attributes.position.array.slice() as Float32Array;
+    const originalPositions = clayPosition.array.slice() as Float32Array;
+    const directions = new Float32Array(originalPositions.length);
+    const radii = new Float32Array(clayPosition.count);
+    for (let i = 0; i < radii.length; i++) {
+      const offset = i * 3;
+      const x = originalPositions[offset];
+      const y = originalPositions[offset + 1];
+      const z = originalPositions[offset + 2];
+      const radius = Math.hypot(x, y, z) || 1;
+      radii[i] = radius;
+      directions[offset] = x / radius;
+      directions[offset + 1] = y / radius;
+      directions[offset + 2] = z / radius;
+    }
+    clayVertexDataRef.current = { directions, radii };
+    }
 
     // =========================================================
     // SEED 2 — 3D POP TOY CANDY COLLIDER
     // =========================================================
+    if (visualTheme === 'toy-collider') {
     const nbodyGroup = new THREE.Group();
     const nbodyList: NBody[] = [];
     const candyColors = [0xff3b30, 0xffcc00, 0x00c7be, 0x5856d6, 0xff2d55];
+    const candyGeometry = new THREE.SphereGeometry(1, 24, 24);
+    const candyMaterial = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      metalness: 0.1,
+      roughness: 0.15,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.08,
+      reflectivity: 0.9
+    });
+    const candyMesh = new THREE.InstancedMesh(candyGeometry, candyMaterial, 110);
+    const candyMatrix = new THREE.Matrix4();
+    const candyScale = new THREE.Vector3();
+    const candyQuaternion = new THREE.Quaternion();
+    const candyColor = new THREE.Color();
 
     for (let i = 0; i < 110; i++) {
       const size = Math.random() * 0.22 + 0.08;
-      const sMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(size, 24, 24),
-        new THREE.MeshPhysicalMaterial({
-          color: candyColors[i % candyColors.length],
-          metalness: 0.1,
-          roughness: 0.15,
-          clearcoat: 0.9,
-          clearcoatRoughness: 0.08,
-          reflectivity: 0.9
-        })
-      );
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       const radius = 1.2 + Math.random() * 2.1;
@@ -212,22 +272,32 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
         radius * Math.sin(phi) * Math.sin(theta),
         radius * Math.cos(phi)
       );
-      sMesh.position.copy(pos);
-      nbodyGroup.add(sMesh);
+      candyScale.setScalar(size);
+      candyMatrix.compose(pos, candyQuaternion, candyScale);
+      candyMesh.setMatrixAt(i, candyMatrix);
+      candyMesh.setColorAt(i, candyColor.setHex(candyColors[i % candyColors.length]));
       nbodyList.push({
-        mesh: sMesh,
+        index: i,
         pos,
         vel: new THREE.Vector3((Math.random() - 0.5) * 0.04, (Math.random() - 0.5) * 0.04, (Math.random() - 0.5) * 0.04),
-        mass: size * 10
+        mass: size * 10,
+        size
       });
     }
+    candyMesh.instanceMatrix.needsUpdate = true;
+    candyMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    if (candyMesh.instanceColor) candyMesh.instanceColor.needsUpdate = true;
+    nbodyGroup.add(candyMesh);
     scene.add(nbodyGroup);
     nbodyGroupRef.current = nbodyGroup;
+    nbodyMeshRef.current = candyMesh;
     nbodyPhysicsRef.current = nbodyList;
+    }
 
     // =========================================================
     // SEED 3 — 3D MEMPHIS GEOMETRIC BLOOM
     // =========================================================
+    if (visualTheme === 'memphis-bloom') {
     const memphisGroup = new THREE.Group();
     const coreGroup = new THREE.Group();
     coreGroup.add(
@@ -279,10 +349,12 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     scene.add(memphisGroup);
     memphisGroupRef.current = memphisGroup;
     memphisItemsRef.current = memItems;
+    }
 
     // =========================================================
     // SEED 4 — 3D POP ART COMIC BURST (envelope-driven motion)
     // =========================================================
+    if (visualTheme === 'comic-burst') {
     const makeBurstGeo = (spikes: number, outer: number, inner: number) => {
       const shape = new THREE.Shape();
       for (let i = 0; i < spikes * 2; i++) {
@@ -326,11 +398,13 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     ballGroup.position.z = 0.55;
     scene.add(ballGroup);
     comicBallRef.current = ballGroup;
+    }
 
     // =========================================================
     // SEED 5 — 3D SUPERFLAT SMILING FLOWER (Murakami)
     // Flat rainbow petals, zero shading, radial balance, kawaii face
     // =========================================================
+    if (visualTheme === 'superflat-bloom') {
     const flowerRoot = new THREE.Group();
     const petalPalette = [0xff006e, 0xffbe0b, 0xfb5607, 0x8338ec, 0x3a86ff, 0x06d6a0];
     const petals: FlowerPetal[] = [];
@@ -380,15 +454,18 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     scene.add(flowerRoot);
     flowerRootRef.current = flowerRoot;
     flowerPetalsRef.current = petals;
+    }
 
     // =========================================================
     // SEED 6 — 3D VOXEL PULSE SHELL
     // Chunky cubes, quantized 5-color neobrutalist palette, traveling waves
     // =========================================================
+    if (visualTheme === 'voxel-pulse') {
     const voxelCount = 240;
     const voxelGeo = new THREE.BoxGeometry(0.36, 0.36, 0.36);
     const voxelMat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.05 });
     const voxelMesh = new THREE.InstancedMesh(voxelGeo, voxelMat, voxelCount);
+    voxelMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
     const voxelPalette = [0x111111, 0xf8f9fa, 0xe63946, 0xffd60a, 0x1d3557];
     const dirs = new Float32Array(voxelCount * 3);
@@ -414,6 +491,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     voxelMeshRef.current = voxelMesh;
     voxelGroupRef.current = voxelGroup;
     voxelDataRef.current = { dirs, count: voxelCount };
+    }
 
     // ---------- Responsive camera ----------
     const handleResize = () => {
@@ -439,9 +517,15 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     const tmpScale = new THREE.Vector3();
     const upVec = new THREE.Vector3(0, 1, 0);
     const dirVec = new THREE.Vector3();
+    const candyOutward = new THREE.Vector3();
+    const candyDiff = new THREE.Vector3();
+    const candyInstanceMatrix = new THREE.Matrix4();
+    const candyInstanceScale = new THREE.Vector3();
+    const candyInstanceQuaternion = new THREE.Quaternion();
 
     let disposed = false;
     let isAnimating = false;
+    let previousRenderTime: number | null = null;
 
     const stopAnimation = () => {
       if (!isAnimating) return;
@@ -452,12 +536,24 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
       }
     };
 
-    // ---------- 60FPS Animation Loop ----------
-    const animate = () => {
+    // ---------- Animation Loop ----------
+    const animate = (now: number) => {
       animationFrameRef.current = null;
       if (disposed) {
         isAnimating = false;
         return;
+      }
+
+      if (maxFrameRate && previousRenderTime !== null) {
+        const frameDuration = 1000 / maxFrameRate;
+        const elapsed = now - previousRenderTime;
+        if (elapsed + 0.5 < frameDuration) {
+          animationFrameRef.current = requestAnimationFrame(animate);
+          return;
+        }
+        previousRenderTime = now;
+      } else {
+        previousRenderTime = now;
       }
 
       timeRef.current += 0.016;
@@ -504,22 +600,20 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
       }
 
       // --- SEED 1: CERAMIC CLAY BLOB ---
-      if (activeTheme === 'clay-blob' && clayMeshRef.current && clayOrigPositionsRef.current) {
+      if (activeTheme === 'clay-blob' && clayMeshRef.current && clayVertexDataRef.current) {
         const mesh = clayMeshRef.current;
         const posAttr = mesh.geometry.attributes.position;
-        const origPos = clayOrigPositionsRef.current;
+        const positions = posAttr.array as Float32Array;
+        const { directions, radii } = clayVertexDataRef.current;
 
         mesh.rotation.y = t * 0.25;
         mesh.rotation.x = Math.sin(t * 0.4) * 0.2;
 
         for (let i = 0; i < posAttr.count; i++) {
-          const ox = origPos[i * 3];
-          const oy = origPos[i * 3 + 1];
-          const oz = origPos[i * 3 + 2];
-          const length = Math.sqrt(ox * ox + oy * oy + oz * oz);
-          const nx = ox / length;
-          const ny = oy / length;
-          const nz = oz / length;
+          const offset = i * 3;
+          const nx = directions[offset];
+          const ny = directions[offset + 1];
+          const nz = directions[offset + 2];
 
           let knob = 0;
           if (isBurst) {
@@ -532,15 +626,21 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
             knob = Math.sin(nx * 3 + t * 1.6) * Math.cos(nz * 3 + t * 1.6) * 0.08;
           }
 
-          const newLen = length + knob;
-          posAttr.setXYZ(i, nx * newLen, ny * newLen, nz * newLen);
+          const newLen = radii[i] + knob;
+          positions[offset] = nx * newLen;
+          positions[offset + 1] = ny * newLen;
+          positions[offset + 2] = nz * newLen;
         }
         posAttr.needsUpdate = true;
         mesh.geometry.computeVertexNormals();
       }
 
       // --- SEED 2: POP TOY CANDY COLLIDER ---
-      else if (activeTheme === 'toy-collider' && nbodyGroupRef.current && nbodyPhysicsRef.current) {
+      else if (
+        activeTheme === 'toy-collider' &&
+        nbodyGroupRef.current &&
+        nbodyMeshRef.current
+      ) {
         const bodies = nbodyPhysicsRef.current;
         nbodyGroupRef.current.rotation.y = t * 0.15;
         nbodyGroupRef.current.rotation.z = Math.sin(t * 0.3) * 0.1;
@@ -552,7 +652,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
         for (let i = 0; i < bodies.length; i++) {
           const b1 = bodies[i];
           const distToCenter = b1.pos.length() || 0.1;
-          const outwardNormal = b1.pos.clone().normalize();
+          const outwardNormal = candyOutward.copy(b1.pos).normalize();
 
           b1.vel.addScaledVector(b1.pos, -springK);
 
@@ -565,12 +665,12 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
 
           for (let j = i + 1; j < bodies.length; j++) {
             const b2 = bodies[j];
-            const diff = b1.pos.clone().sub(b2.pos);
+            const diff = candyDiff.copy(b1.pos).sub(b2.pos);
             const dist = diff.length();
             if (dist < 0.65) {
-              const push = diff.normalize().multiplyScalar((0.65 - dist) * 0.05);
-              b1.vel.add(push);
-              b2.vel.sub(push);
+              diff.multiplyScalar(((0.65 - dist) * 0.05) / Math.max(dist, 1e-6));
+              b1.vel.add(diff);
+              b2.vel.sub(diff);
             }
           }
 
@@ -587,8 +687,15 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
             b1.vel.multiplyScalar(0.18);
           }
 
-          b1.mesh.position.copy(b1.pos);
+          candyInstanceScale.setScalar(b1.size);
+          candyInstanceMatrix.compose(
+            b1.pos,
+            candyInstanceQuaternion,
+            candyInstanceScale
+          );
+          nbodyMeshRef.current.setMatrixAt(b1.index, candyInstanceMatrix);
         }
+        nbodyMeshRef.current.instanceMatrix.needsUpdate = true;
       }
 
       // --- SEED 3: MEMPHIS GEOMETRIC BLOOM ---
@@ -596,7 +703,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
         const items = memphisItemsRef.current;
         const core = memphisCoreRef.current;
 
-        memphisGroup.rotation.y = t * 0.12;
+        memphisGroupRef.current.rotation.y = t * 0.12;
         core.rotation.y = t * 0.4;
         core.children[1].rotation.z = t * 0.8;
         core.scale.setScalar(1 + (isBurst ? vol * 0.25 + fAvg * 0.15 : Math.sin(t * 1.5) * 0.03));
@@ -761,7 +868,8 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
     const startAnimation = () => {
       if (disposed || isAnimating) return;
       isAnimating = true;
-      animate();
+      previousRenderTime = null;
+      animationFrameRef.current = requestAnimationFrame(animate);
     };
 
     startAnimationRef.current = startAnimation;
@@ -804,7 +912,7 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
         rendererRef.current = null;
       }
     };
-  }, []);
+  }, [maxFrameRate, powerPreference, preview, visualTheme]);
 
   return (
     <div

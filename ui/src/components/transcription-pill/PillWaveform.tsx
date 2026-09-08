@@ -76,6 +76,7 @@ export const PillWaveform = memo(function PillWaveform({
         inputEnergy
       );
 
+      let needsSettling = false;
       parameters.forEach((parameter, index) => {
         let target = FLAT_WAVEFORM_SCALE;
         if (activeStatus === 'recording' && smoothedEnergyRef.current > 0) {
@@ -93,16 +94,19 @@ export const PillWaveform = memo(function PillWaveform({
 
         values[index] +=
           (target - values[index]) * (activeStatus === 'recording' ? 0.5 : 0.14);
+        if (Math.abs(target - values[index]) > 0.001) needsSettling = true;
         const element = elements[index];
         if (element) element.style.transform = `scaleY(${values[index].toFixed(3)})`;
       });
 
-      frame = window.requestAnimationFrame(animate);
+      if (activeStatus === 'recording' || needsSettling) {
+        frame = window.requestAnimationFrame(animate);
+      }
     };
 
     frame = window.requestAnimationFrame(animate);
     return () => window.cancelAnimationFrame(frame);
-  }, [active, parameters]);
+  }, [active, parameters, status]);
 
   const color =
     status === 'recording'
