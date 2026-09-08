@@ -3,6 +3,15 @@ import type { VoiceInputMode } from '../types/voice';
 import { SpeechSegmentBuffer } from './speechSegmentBuffer';
 
 const VAD_ASSET_PATH = '/vad/';
+const MICROPHONE_CONSTRAINTS: MediaStreamConstraints = {
+  audio: {
+    channelCount: 1,
+    echoCancellation: true,
+    autoGainControl: true,
+    noiseSuppression: true
+  },
+  video: false
+};
 
 interface VoiceWindow extends Window {
   webkitAudioContext?: typeof AudioContext;
@@ -19,6 +28,25 @@ function closeAudioContext(context: AudioContext) {
   }
 }
 
+async function suspendAudioContext(context: AudioContext) {
+  if (context.state === 'running') {
+    await context.suspend().catch(() => undefined);
+  }
+}
+
+async function destroyVad(vad: MicVAD) {
+  try {
+    await vad.destroy();
+  } catch {
+    // MicVAD.destroy() assumes start() has initialized its audio nodes. A
+    // prewarmed model may never have started, so release that model directly.
+    const warmVad = vad as unknown as {
+      model?: { release: () => Promise<void> };
+    };
+    await warmVad.model?.release().catch(() => undefined);
+  }
+}
+
 export class MicrophoneCapture {
   private readonly segments = new SpeechSegmentBuffer();
   private mode: VoiceInputMode = 'tap';
@@ -26,11 +54,11 @@ export class MicrophoneCapture {
   private disposed = false;
   private finishing = false;
   private readyNotified = false;
+  private stream: MediaStream | null = null;
+  private microphone: MediaStreamAudioSourceNode | null = null;
 
   private constructor(
-    private readonly stream: MediaStream,
     private readonly context: AudioContext,
-    private readonly microphone: MediaStreamAudioSourceNode,
     readonly analyser: AnalyserNode,
     private readonly vad: MicVAD
   ) {}
@@ -40,22 +68,7 @@ export class MicrophoneCapture {
       throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        autoGainControl: true,
-        noiseSuppression: true
-      },
-      video: false
-    });
-    if (signal?.aborted) {
-      stream.getTracks().forEach(track => track.stop());
-      throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
-    }
-
     let context: AudioContext | null = null;
-    let microphone: MediaStreamAudioSourceNode | null = null;
     let vad: MicVAD | null = null;
     let capture: MicrophoneCapture | null = null;
 
@@ -69,12 +82,11 @@ export class MicrophoneCapture {
       analyser.fftSize = 128;
       analyser.smoothingTimeConstant = 0.75;
 
-      microphone = context.createMediaStreamSource(stream);
-      microphone.connect(analyser);
-
       vad = await MicVAD.new({
         model: 'v5',
-        startOnLoad: true,
+        // Load the ONNX model now, but do not acquire the physical microphone
+        // until the user begins dictating.
+        startOnLoad: false,
         processorType: 'auto',
         audioContext: context,
         baseAssetPath: VAD_ASSET_PATH,
@@ -85,9 +97,17 @@ export class MicrophoneCapture {
         preSpeechPadMs: 300,
         minSpeechMs: 250,
         submitUserSpeechOnPause: true,
-        getStream: async () => stream,
-        pauseStream: async () => undefined,
-        resumeStream: async () => stream,
+        getStream: async () => {
+          if (!capture) throw new Error('Microphone capture is not ready.');
+          return capture.acquireStream();
+        },
+        pauseStream: async stream => {
+          capture?.releaseStream(stream);
+        },
+        resumeStream: async () => {
+          if (!capture) throw new Error('Microphone capture is not ready.');
+          return capture.acquireStream();
+        },
         ortConfig: ort => {
           ort.env.wasm.numThreads = 1;
           ort.env.wasm.proxy = false;
@@ -100,12 +120,11 @@ export class MicrophoneCapture {
         throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
       }
 
-      capture = new MicrophoneCapture(stream, context, microphone, analyser, vad);
+      capture = new MicrophoneCapture(context, analyser, vad);
+      await suspendAudioContext(context);
       return capture;
     } catch (error) {
-      if (vad) await vad.destroy().catch(() => undefined);
-      microphone?.disconnect();
-      stream.getTracks().forEach(track => track.stop());
+      if (vad) await destroyVad(vad);
       if (context) closeAudioContext(context);
       throw error;
     }
@@ -113,18 +132,20 @@ export class MicrophoneCapture {
 
   async start({ mode, onUtterance }: StartCaptureOptions) {
     this.assertActive();
-    if (!this.stream.getAudioTracks().some(track => track.readyState === 'live')) {
-      throw new Error('The microphone stream is no longer available.');
-    }
     this.mode = mode;
     this.onUtterance = onUtterance;
     this.finishing = false;
     this.readyNotified = false;
 
-    this.setStreamEnabled(true);
-    if (this.context.state === 'suspended') await this.context.resume();
-    if (!this.vad.listening) await this.vad.start();
-    this.assertActive();
+    try {
+      if (!this.vad.listening) await this.vad.start();
+      if (this.context.state === 'suspended') await this.context.resume();
+      this.assertActive();
+    } catch (error) {
+      this.releaseStream();
+      await suspendAudioContext(this.context);
+      throw error;
+    }
   }
 
   async finish(): Promise<Blob | null> {
@@ -135,7 +156,8 @@ export class MicrophoneCapture {
       if (this.vad.listening) await this.vad.pause();
       return this.segments.drainWav();
     } finally {
-      this.setStreamEnabled(false);
+      this.releaseStream();
+      await suspendAudioContext(this.context);
       this.finishing = false;
     }
   }
@@ -147,7 +169,8 @@ export class MicrophoneCapture {
       if (this.vad.listening) await this.vad.pause();
       this.segments.clear();
     } finally {
-      this.setStreamEnabled(false);
+      this.releaseStream();
+      await suspendAudioContext(this.context);
       this.finishing = false;
     }
   }
@@ -157,17 +180,21 @@ export class MicrophoneCapture {
     this.segments.clear();
     this.readyNotified = false;
     this.finishing = false;
-    this.setStreamEnabled(true);
-    if (this.context.state === 'suspended') await this.context.resume();
-    if (!this.vad.listening) await this.vad.start();
+    try {
+      if (!this.vad.listening) await this.vad.start();
+      if (this.context.state === 'suspended') await this.context.resume();
+    } catch (error) {
+      this.releaseStream();
+      await suspendAudioContext(this.context);
+      throw error;
+    }
   }
 
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.stream.getTracks().forEach(track => track.stop());
-    await this.vad.destroy().catch(() => undefined);
-    this.microphone.disconnect();
+    this.releaseStream();
+    await destroyVad(this.vad);
     this.segments.clear();
     closeAudioContext(this.context);
   }
@@ -186,10 +213,28 @@ export class MicrophoneCapture {
     }
   }
 
-  private setStreamEnabled(enabled: boolean) {
-    this.stream.getAudioTracks().forEach(track => {
-      track.enabled = enabled;
-    });
+  private async acquireStream() {
+    this.assertActive();
+    this.releaseStream();
+    const stream = await navigator.mediaDevices.getUserMedia(MICROPHONE_CONSTRAINTS);
+    if (this.disposed) {
+      stream.getTracks().forEach(track => track.stop());
+      throw new DOMException('Microphone acquisition was cancelled.', 'AbortError');
+    }
+
+    this.stream = stream;
+    this.microphone = this.context.createMediaStreamSource(stream);
+    this.microphone.connect(this.analyser);
+    return stream;
+  }
+
+  private releaseStream(stream = this.stream) {
+    if (!stream) return;
+    stream.getTracks().forEach(track => track.stop());
+    if (this.stream !== stream) return;
+    this.microphone?.disconnect();
+    this.microphone = null;
+    this.stream = null;
   }
 
   private assertActive() {

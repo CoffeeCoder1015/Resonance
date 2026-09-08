@@ -57,7 +57,13 @@ export class VoicePipeline {
 
   async start(options: CaptureStartOptions) {
     const capture = await this.ensureCapture();
-    await capture.start(options);
+    try {
+      await capture.start(options);
+    } catch (error) {
+      // MicVAD cannot restart reliably after microphone acquisition fails.
+      await this.disposeCapture(capture);
+      throw error;
+    }
     return capture;
   }
 
@@ -68,7 +74,12 @@ export class VoicePipeline {
 
   async resume(capture: MicrophoneCapture) {
     if (!this.owns(capture)) return false;
-    await capture.resume();
+    try {
+      await capture.resume();
+    } catch (error) {
+      await this.disposeCapture(capture);
+      throw error;
+    }
     return true;
   }
 

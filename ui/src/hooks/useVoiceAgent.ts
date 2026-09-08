@@ -246,7 +246,9 @@ export function useVoiceAgent() {
 
       try {
         const audio = await pipeline.finish(capture);
-        if (mode !== 'agent') releaseVoiceInput();
+        if (mode !== 'agent') {
+          releaseVoiceInput();
+        }
         if (generation !== turnGenerationRef.current) return;
 
         if (mode !== 'agent') {
@@ -357,7 +359,7 @@ export function useVoiceAgent() {
           !pipeline.owns(capture)
         ) {
           activeInputModeRef.current = null;
-          await pipeline.disposeCapture(capture);
+          await pipeline.discardAndPause(capture);
           releaseVoiceInput();
           return;
         }

@@ -15,7 +15,7 @@
     "start": "node server/index.mjs",
     "preview": "vite preview",
     "test:server": "node --test server/*.test.mjs",
-    "test:voice": "node --experimental-strip-types --test src/services/speechSegmentBuffer.test.ts",
+    "test:voice": "node --experimental-strip-types --test src/services/speechSegmentBuffer.test.ts src/services/voicePipeline.test.mjs",
     "test:pill": "node --experimental-strip-types --test src/components/transcription-pill/pillPresentation.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run test:server && npm run test:voice && npm run test:pill && npm run build && npm run build:pill"

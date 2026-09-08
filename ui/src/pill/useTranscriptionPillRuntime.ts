@@ -312,6 +312,14 @@ export function useTranscriptionPillRuntime() {
   }, [finishAndTranscribe, pipeline]);
 
   useEffect(() => {
+    // Load the VAD model while the persistent pill is idle. This does not ask
+    // for microphone access; the physical stream is acquired only on start.
+    void pipeline.ensureCapture().catch(error => {
+      console.warn('Transcription pill prewarm failed.', error);
+    });
+  }, [pipeline]);
+
+  useEffect(() => {
     const bridge = window.resonanceDesktop;
     if (!bridge) return;
     return bridge.subscribeVoiceInputRevoked(async () => {
