@@ -1,8 +1,9 @@
 # Resonance product page
 
-This is the standalone browser-facing Resonance demo. It preserves the original
-avatar, browser speech recognition, speech synthesis, transcript, and simulated
-conversation experience independently from the desktop product UI in `../ui`.
+This is the standalone browser-facing Resonance demo. It embeds the desktop
+product's transcription pill and theme system, with browser speech recognition,
+visible transcription history, and a simulated fallback when recognition is
+unavailable.
 
 ## Development
 
@@ -17,6 +18,7 @@ npm run dev
 npm run check
 ```
 
-The production output is written to `dist/index.html` as a self-contained page
-that can be published through GitHub Pages. GitHub Pages deployment automation
-is not configured yet.
+The production output is written to `dist/index.html` as a self-contained page.
+On every push to `main`, the repository's GitHub Pages workflow builds and
+publishes that output. The generated `dist/` directory remains untracked;
+GitHub Actions supplies it directly to Pages.

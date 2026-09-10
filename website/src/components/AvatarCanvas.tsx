@@ -9,6 +9,9 @@ interface AvatarCanvasProps {
   frequencies: Uint8Array;
   onAvatarClick?: () => void;
   preview?: boolean;
+  active?: boolean;
+  powerPreference?: WebGLPowerPreference;
+  maxFrameRate?: number;
 }
 
 interface NBody {
@@ -109,7 +112,10 @@ export const AvatarCanvas: React.FC<AvatarCanvasProps> = ({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // The pill is visually small but is frequently enlarged by the product
+    // presentation. Supersample the backing buffer so zooming the avatar does
+    // not magnify an 86px raster surface into visible blockiness.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio * 2, 4));
     renderer.toneMapping = THREE.LinearToneMapping;
     renderer.toneMappingExposure = 1.15;
     rendererRef.current = renderer;
