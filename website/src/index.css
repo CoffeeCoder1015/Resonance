@@ -40,7 +40,10 @@ h1 { margin: 0; max-width: 8ch; font-size: clamp(4.5rem, 11vw, 9.5rem); line-hei
 
 .product-page { background: var(--theme-bg); transition: background-color .4s ease; }
 .story-link, .back-to-demo { display: inline-flex; align-items: center; gap: 1rem; color: inherit; font-weight: 600; text-decoration-thickness: 2px; text-underline-offset: 6px; }
-.story-link { margin-top: 2rem; }
+.intro-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.5rem; margin-top: 2rem; }
+.repo-badge { display: inline-flex; align-items: center; gap: .6rem; padding: .7rem .9rem; border: 2px solid #000; background: #fff; box-shadow: 4px 4px 0 #000; color: #000; font-size: .875rem; font-weight: 600; text-decoration: none; }
+.repo-badge svg { width: 1.25rem; height: 1.25rem; flex: none; }
+.repo-badge:hover { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 #000; }
 .story-link span { font-size: 1.5rem; }
 .refinement-story { padding-inline: clamp(1.5rem, 8vw, 9rem); }
 .story-heading { padding-block: clamp(4rem, 9vw, 8rem); border-top: 3px solid #000; }
@@ -70,7 +73,7 @@ h1 { margin: 0; max-width: 8ch; font-size: clamp(4.5rem, 11vw, 9.5rem); line-hei
 .story-demo-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin-top: 1.6rem; font-size: .8rem; line-height: 1.5; }
 .story-demo-footer > span { max-width: 16rem; }
 .story-demo-footer button { cursor: pointer; background: transparent; border: 0; border-bottom: 2px solid #000; padding: 0 0 .2rem; font-size: .875rem; font-weight: 600; color: inherit; }
-.story-demo-footer button:focus-visible, .story-link:focus-visible, .back-to-demo:focus-visible { outline: 3px solid #000; outline-offset: 6px; }
+.story-demo-footer button:focus-visible, .story-link:focus-visible, .back-to-demo:focus-visible, .repo-badge:focus-visible { outline: 3px solid #000; outline-offset: 6px; }
 .results-note { max-width: 48rem; font-size: .875rem; line-height: 1.6; margin: 0 0 5rem; }
 .training-story { border-top: 3px solid #000; padding-block: clamp(4rem, 9vw, 8rem); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .85fr); column-gap: clamp(2rem, 6vw, 6rem); row-gap: 4rem; }
 .training-pair { align-self: center; background: var(--theme-accent); color: var(--theme-accent-foreground); border: 3px solid #000; border-radius: 1.5rem; padding: clamp(1.25rem, 3vw, 2.5rem); box-shadow: 8px 8px 0 #000; transform: rotate(1deg); }

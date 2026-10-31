@@ -220,7 +220,13 @@ export function App() {
         <p className="intro-copy">Speak naturally. Get clear, polished text in the apps you use. Resonance transcribes and refines your words entirely on your computer.</p>
         <p className="supporting-copy">Hold a shortcut, say what’s on your mind, and release. Resonance cleans up the fillers and false starts, then puts the text where you’re writing.</p>
         <div className="micro-note"><span className="micro-dot" /> local models <span className="micro-slash">/</span> private by design</div>
-        <a className="story-link" href="#refinement">See what happens after you speak <span aria-hidden="true">↓</span></a>
+        <div className="intro-actions">
+          <a className="repo-badge" href="https://github.com/CoffeeCoder1015/Resonance">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.64-1.25-1.64-1.02-.7.08-.69.08-.69 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.62 1.22 3.26.93.1-.73.39-1.22.71-1.5-2.5-.28-5.13-1.25-5.13-5.56 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.99 0 0 .95-.3 3.09 1.16a10.7 10.7 0 0 1 5.63 0c2.14-1.45 3.08-1.16 3.08-1.16.62 1.56.23 2.71.12 2.99.72.79 1.16 1.8 1.16 3.03 0 4.32-2.64 5.27-5.15 5.55.4.35.76 1.03.76 2.08v3.1c0 .3.2.65.77.54A11.25 11.25 0 0 0 12 .75Z" /></svg>
+            Visit the repo
+          </a>
+          <a className="story-link" href="#refinement">See what happens after you speak <span aria-hidden="true">↓</span></a>
+        </div>
       </section>
       <section className="demo-area" aria-label="Browser transcription preview">
         <div className="demo-stage">
